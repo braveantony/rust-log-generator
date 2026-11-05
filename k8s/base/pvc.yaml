@@ -1,0 +1,14 @@
+# Sized for the default rotation settings: 5 files x 100 MiB = 500 MiB.
+# No storageClassName: the cluster's default StorageClass is used.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rust-log-generator-logs
+  labels:
+    app.kubernetes.io/name: rust-log-generator
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - pvc.yaml
+
+# The program's settings. A change produces a new ConfigMap name, which rolls
+# the Deployment. LOG_DIR is left at the program default (/logs).
+configMapGenerator:
+  - name: rust-log-generator-config
+    literals:
+      - LOG_RATE_MIB=1
+      - LOG_JSON=true
+      - LOG_MAX_FILE_MIB=100
+      - LOG_MAX_FILES=5

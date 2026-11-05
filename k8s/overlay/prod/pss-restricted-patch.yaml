@@ -1,0 +1,23 @@
+# Everything the "restricted" profile requires of a pod, plus a read-only root
+# filesystem (the program only writes to the /logs volume).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rust-log-generator
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rust-log-generator
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

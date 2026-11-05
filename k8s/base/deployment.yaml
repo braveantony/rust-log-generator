@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rust-log-generator
+  labels:
+    app.kubernetes.io/name: rust-log-generator
+spec:
+  replicas: 1
+  # One writer per volume: the old pod must be gone before the new one starts,
+  # otherwise both would append to the same log file.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rust-log-generator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rust-log-generator
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        # The image runs as 65532:65532. fsGroup keeps the volume writable for
+        # it on storage that does not hand out world-writable directories.
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: rust-log-generator
+          image: registry.gitlab.com/kubeantony/rust-log-generator:0.1.0
+          envFrom:
+            - configMapRef:
+                name: rust-log-generator-config
+          volumeMounts:
+            - name: logs
+              mountPath: /logs
+          resources:
+            requests:
+              cpu: 50m
+              memory: 16Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: logs
+          persistentVolumeClaim:
+            claimName: rust-log-generator-logs

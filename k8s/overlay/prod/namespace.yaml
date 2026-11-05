@@ -1,0 +1,13 @@
+# Pod Security Standards "restricted", the strictest profile. Pods that do not
+# meet it are rejected (enforce) and also reported (audit, warn).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rust-log-generator
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
