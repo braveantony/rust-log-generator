@@ -1,4 +1,5 @@
-# Build stage: run the unit tests, then compile a static musl binary.
+# Build stage: run the unit and end-to-end tests, then compile a static musl
+# binary.
 # The builder is pinned by digest so that every build uses the same compiler;
 # a tag such as `1-alpine` moves with each new Rust or Alpine release. The
 # digest is that of the multi-platform image index. To update, pick a newer
@@ -8,6 +9,7 @@ FROM docker.io/library/rust:1.99.1-alpine3.24@sha256:f432d4b8663fbc50b29e33846bf
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY tests ./tests
 RUN cargo test --locked \
     && cargo build --release --locked \
     && mkdir /logs
