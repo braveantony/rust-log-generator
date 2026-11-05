@@ -102,14 +102,14 @@ kubectl delete -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/ove
 
 ### 用 podman 在本機執行
 
-不需要 Kubernetes 也能執行。下面的指令以 5 MiB/s 寫入純文字 log，檔案存在名為 `logs` 的 volume（podman 管理的儲存空間）裡，按 Ctrl+C 停止：
+不需要 Kubernetes 也能執行。下面的指令以 5 MiB/s 寫入純文字 log，檔案存在名為 `rust-log-generator-logs` 的 volume（podman 管理的儲存空間）裡。這個 volume 不存在時，podman 會自動建立。按 Ctrl+C 停止：
 
 ```bash
-podman run --rm -e LOG_RATE_MIB=5 -e LOG_JSON=false -v logs:/logs \
+podman run --rm -e LOG_RATE_MIB=5 -e LOG_JSON=false -v rust-log-generator-logs:/logs \
   registry.gitlab.com/kubeantony/rust-log-generator:0.1.1
 ```
 
-停止後 log 檔還留在 `logs` volume 裡，不需要時用 `podman volume rm logs` 刪除。
+停止後 log 檔還留在 volume 裡，不需要時用 `podman volume rm rust-log-generator-logs` 刪除。
 
 ## How It Works
 
