@@ -5,6 +5,7 @@ namespace: rust-log-generator
 
 resources:
   - namespace.yaml
+  - network-policy.yaml
   - ../../base
 
 patches:
