@@ -82,6 +82,17 @@ mod tests {
     }
 
     #[test]
+    fn the_lowest_rate_the_settings_accept_still_produces_output() {
+        // The settings refuse anything lower because the pacer would never
+        // ask for a line: one second of output, the most it lets pile up,
+        // would round down to no bytes at all. This ties the two together.
+        let mut pacer = Pacer::new(crate::config::MIN_RATE_BYTES_PER_SEC);
+        assert!(pacer.target(Duration::from_secs(1), 0) > 0);
+        let mut too_slow = Pacer::new(crate::config::MIN_RATE_BYTES_PER_SEC / 2.0);
+        assert_eq!(too_slow.target(Duration::from_secs(3600), 0), 0);
+    }
+
+    #[test]
     fn nothing_is_due_at_start() {
         assert_eq!(bytes_due(MIB, Duration::ZERO), 0);
     }

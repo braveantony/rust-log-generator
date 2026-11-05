@@ -15,14 +15,12 @@ impl Config {
     /// rejected with a message naming the offending variable.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
         // Validated after converting to bytes: a huge but finite MiB value can
-        // still overflow to infinity in the conversion. Below one byte per
-        // second the pacer never asks for a whole line, so the program would
-        // run without ever writing anything.
+        // still overflow to infinity in the conversion.
         let rate_bytes_per_sec = match lookup("LOG_RATE_MIB") {
             None => MIB as f64,
             Some(raw) => match raw.trim().parse::<f64>().map(|mib| mib * MIB as f64) {
-                Ok(bytes) if bytes.is_finite() && bytes >= 1.0 => bytes,
-                Ok(bytes) if bytes > 0.0 && bytes < 1.0 => {
+                Ok(bytes) if bytes.is_finite() && bytes >= MIN_RATE_BYTES_PER_SEC => bytes,
+                Ok(bytes) if bytes > 0.0 && bytes < MIN_RATE_BYTES_PER_SEC => {
                     return Err(format!(
                         "LOG_RATE_MIB must be at least 1 byte per second \
                          (about 0.00000096 MiB), got {raw:?}"
@@ -89,6 +87,11 @@ impl Config {
 }
 
 pub const MIB: u64 = 1024 * 1024;
+
+/// The lowest rate that is accepted. Below it the pacer never asks for a line
+/// (see the test in `pacer.rs` that uses this constant), so the program would
+/// run without ever writing anything.
+pub const MIN_RATE_BYTES_PER_SEC: f64 = 1.0;
 
 fn positive_integer(
     lookup: &impl Fn(&str) -> Option<String>,

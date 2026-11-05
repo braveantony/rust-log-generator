@@ -51,20 +51,33 @@ impl RotatingWriter {
 
     /// If someone deleted `app.log` or put another file in its place, the open
     /// file is no longer the one readers see, and lines would keep going to a
-    /// file without a name until the next rotation. This switches to whatever
-    /// is at the path now, creating the file if it is gone, and takes along
-    /// the lines that are still buffered.
+    /// file without a name until the next rotation. This switches to the file
+    /// that is at the path now, creating it (and the directory) if it is gone,
+    /// and takes along the lines that are still buffered.
+    ///
+    /// It is best effort. When the path cannot be examined, or what is there
+    /// is not a file that can be opened for appending, the writer stays with
+    /// the file it has, which is what happened before this check existed; the
+    /// next rotation then moves the obstacle out of the way.
     fn follow_replaced_file(&mut self) -> io::Result<()> {
-        let ours = self.file.get_ref().metadata()?;
-        let still_ours = match fs::metadata(self.dir.join(FILE_NAME)) {
-            Ok(at_path) => at_path.dev() == ours.dev() && at_path.ino() == ours.ino(),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => false,
-            Err(err) => return Err(err),
-        };
-        if still_ours {
+        let Ok(ours) = self.file.get_ref().metadata() else {
             return Ok(());
+        };
+        match fs::metadata(self.dir.join(FILE_NAME)) {
+            Ok(at_path) if at_path.dev() == ours.dev() && at_path.ino() == ours.ino() => {
+                return Ok(())
+            }
+            // Only a regular file is followed: opening a FIFO, for one, could
+            // block for ever.
+            Ok(at_path) if !at_path.is_file() => return Ok(()),
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Ok(()),
         }
-        let (file, size) = open_active(&self.dir)?;
+        let reopened = fs::create_dir_all(&self.dir).and_then(|()| open_active(&self.dir));
+        let Ok((file, size)) = reopened else {
+            return Ok(());
+        };
         let (_, buffered) = mem::replace(&mut self.file, file).into_parts();
         // The buffer is only unavailable after a panic inside a write, and a
         // panic does not come back here.
@@ -376,6 +389,49 @@ mod tests {
         write_all(&mut writer, &["ddd\n"]);
         assert_eq!(dir.read("app.log.1"), "ext\next\nbbb\nccc\n");
         assert_eq!(dir.read("app.log"), "ddd\n");
+    }
+
+    #[test]
+    fn stays_with_its_file_when_what_replaced_it_cannot_be_written_to() {
+        // A directory stands in for anything that cannot be opened for
+        // appending, such as a file owned by someone else.
+        let dir = TempDir::new();
+        let mut writer = RotatingWriter::new(&dir.0, 1024, 5).unwrap();
+        write_all(&mut writer, &["aaa\n"]);
+        fs::remove_file(dir.0.join("app.log")).unwrap();
+        fs::create_dir(dir.0.join("app.log")).unwrap();
+        writer.write_line(b"bbb\n").unwrap();
+        writer.flush().unwrap();
+        assert!(dir.0.join("app.log").is_dir());
+    }
+
+    #[test]
+    fn stays_with_its_file_when_the_path_cannot_be_examined() {
+        // The log directory has turned into a file, so looking up app.log in
+        // it fails with something other than "not found".
+        let dir = TempDir::new();
+        let logs = dir.0.join("logs");
+        let mut writer = RotatingWriter::new(&logs, 1024, 5).unwrap();
+        writer.write_line(b"aaa\n").unwrap();
+        writer.flush().unwrap();
+        fs::remove_dir_all(&logs).unwrap();
+        fs::write(&logs, "now a file").unwrap();
+        writer.write_line(b"bbb\n").unwrap();
+        writer.flush().unwrap();
+        assert_eq!(fs::read_to_string(&logs).unwrap(), "now a file");
+    }
+
+    #[test]
+    fn recreates_the_directory_when_it_was_removed() {
+        let dir = TempDir::new();
+        let logs = dir.0.join("logs");
+        let mut writer = RotatingWriter::new(&logs, 1024, 5).unwrap();
+        writer.write_line(b"aaa\n").unwrap();
+        writer.flush().unwrap();
+        fs::remove_dir_all(&logs).unwrap();
+        writer.write_line(b"bbb\n").unwrap();
+        writer.flush().unwrap();
+        assert_eq!(fs::read_to_string(logs.join("app.log")).unwrap(), "bbb\n");
     }
 
     #[test]
