@@ -4,6 +4,8 @@ rust-log-generator 是用 Rust 寫的 log 產生器，會依照你設定的速�
 
 適合用來測試需要穩定 log 流量的情境，例如 log 收集管線的處理量，或儲存空間的寫入效能。
 
+這個專案是和 Claude Code 一問一答開發出來的，開發過程記錄在 [user-questions.md](user-questions.md)。
+
 ## Key Features
 
 - **自訂寫入速率**：設定每秒要寫幾 MiB，程式就穩定照這個速率輸出。
@@ -100,14 +102,14 @@ kubectl delete -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/ove
 
 ### 用 podman 在本機執行
 
-不需要 Kubernetes 也能執行。下面的指令以 5 MiB/s 寫入純文字 log，檔案存在名為 `logs` 的 volume（podman 管理的儲存空間）裡，按 Ctrl+C 停止：
+不需要 Kubernetes 也能執行。下面的指令以 5 MiB/s 寫入純文字 log，檔案存在名為 `rust-log-generator-logs` 的 volume（podman 管理的儲存空間）裡。這個 volume 不存在時，podman 會自動建立。按 Ctrl+C 停止：
 
 ```bash
-podman run --rm -e LOG_RATE_MIB=5 -e LOG_JSON=false -v logs:/logs \
+podman run --rm -e LOG_RATE_MIB=5 -e LOG_JSON=false -v rust-log-generator-logs:/logs \
   registry.gitlab.com/kubeantony/rust-log-generator:0.1.1
 ```
 
-停止後 log 檔還留在 `logs` volume 裡，不需要時用 `podman volume rm logs` 刪除。
+停止後 log 檔還留在 volume 裡，不需要時用 `podman volume rm rust-log-generator-logs` 刪除。
 
 ## How It Works
 
