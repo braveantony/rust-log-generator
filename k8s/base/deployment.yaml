@@ -27,10 +27,22 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: rust-log-generator
-          image: registry.gitlab.com/kubeantony/rust-log-generator:0.1.0
+          # rust-log-generator 0.1.1, pinned by digest: a tag can be moved to a
+          # different build, a digest cannot. Update it when a new image is
+          # pushed.
+          image: registry.gitlab.com/kubeantony/rust-log-generator@sha256:c712899554bc472fac7ff1da6580e8b36c4b9b54e007cb4d7af4575e71a628ae
           envFrom:
             - configMapRef:
                 name: rust-log-generator-config
+          env:
+            # Cap on LOG_MAX_FILE_MIB x LOG_MAX_FILES; the program refuses to
+            # start above it. It sits just under the size of the PVC and is set
+            # here, not in the ConfigMap, because `env` wins over `envFrom`:
+            # changing the ConfigMap alone cannot raise it. Not every storage
+            # class enforces the PVC size, so this is what keeps the log files
+            # from filling the node's disk.
+            - name: LOG_MAX_TOTAL_MIB
+              value: "900"
           volumeMounts:
             - name: logs
               mountPath: /logs
