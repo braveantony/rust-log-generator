@@ -4,6 +4,8 @@ rust-log-generator 是用 Rust 寫的 log 產生器，會依照你設定的速�
 
 適合用來測試需要穩定 log 流量的情境，例如 log 收集管線的處理量，或儲存空間的寫入效能。
 
+這個專案是和 Claude Code 一問一答開發出來的，開發過程記錄在 [user-questions.md](user-questions.md)。
+
 ## Key Features
 
 - **自訂寫入速率**：設定每秒要寫幾 MiB，程式就穩定照這個速率輸出。
