@@ -43,8 +43,6 @@ def main():
     parser.add_argument("--format", choices=["json", "text"], required=True)
     parser.add_argument("--max-file-bytes", type=int, required=True)
     parser.add_argument("--max-files", type=int, required=True)
-    parser.add_argument("--allow-oversize", action="store_true",
-                        help="do not fail on files larger than --max-file-bytes")
     args = parser.parse_args()
 
     problems = []
@@ -82,7 +80,7 @@ def main():
         with open(path, "rb") as handle:
             data = handle.read()
         sizes[name] = len(data)
-        if len(data) > args.max_file_bytes and not args.allow_oversize:
+        if len(data) > args.max_file_bytes:
             problems.append(f"{name}: {len(data)} bytes, more than max_file_bytes={args.max_file_bytes}")
         if len(data) % LINE_BYTES:
             problems.append(f"{name}: {len(data)} bytes is not a multiple of {LINE_BYTES}")

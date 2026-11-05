@@ -67,8 +67,12 @@ def start(name, env, directory, mount_opts="", extra=()):
 
 
 def wait(name, timeout=30):
-    result = sh("podman", "wait", name, timeout=timeout)
-    return int(result.stdout.strip())
+    """Exit code of the container, or None if it did not stop in time and had to be killed."""
+    try:
+        return int(sh("podman", "wait", name, timeout=timeout).stdout.strip())
+    except (subprocess.TimeoutExpired, ValueError):
+        sh("podman", "kill", "-s", "KILL", name)
+        return None
 
 
 def logs(name):
@@ -108,21 +112,28 @@ def last_seq(directory, fmt):
                 with open(path, "rb") as handle:
                     handle.seek(size - size % LINE - LINE)
                     line = handle.read(LINE).decode("ascii")
-            except OSError:
+                if fmt == "json":
+                    return json.loads(line)["seq"]
+                return int(re.search(r" seq=(\d+) ", line).group(1))
+            except (OSError, ValueError, AttributeError):
+                # The file was rotated between measuring it and reading it.
                 continue
-            if fmt == "json":
-                return json.loads(line)["seq"]
-            return int(re.search(r" seq=(\d+) ", line).group(1))
         time.sleep(0.02)
     raise RuntimeError(f"no complete line found in {directory}")
 
 
-def check(directory, fmt, max_file_mib, max_files, allow_oversize=False):
+def check(directory, fmt, max_file_mib, max_files):
     args = [sys.executable, os.path.join(HERE, "check_logs.py"), directory, "--format", fmt,
             "--max-file-bytes", str(int(max_file_mib * MIB)), "--max-files", str(max_files)]
-    if allow_oversize:
-        args.append("--allow-oversize")
     return json.loads(sh(*args, timeout=600).stdout)
+
+
+def cleanup():
+    """Removes every container and volume this script may have left behind."""
+    names = [name for name in sh("podman", "ps", "-a", "--format", "{{.Names}}").stdout.split() if name.startswith("rlg-")]
+    if names:
+        sh("podman", "rm", "-f", *names)
+    sh("podman", "volume", "rm", "-f", "rlg-full")
 
 
 def listing(directory):
@@ -149,7 +160,7 @@ def group_config():
         ("LOG_MAX_FILE_MIB", "0"), ("LOG_MAX_FILE_MIB", "1.5"), ("LOG_MAX_FILE_MIB", "-5"),
         ("LOG_MAX_FILES", "0"), ("LOG_MAX_FILES", "two"), ("LOG_MAX_TOTAL_MIB", "0"),
     ]
-    failures = []
+    failures, touched = [], []
     for variable, value in bad:
         directory = fresh_dir("badcfg")
         # Files that a valid start with LOG_MAX_FILES=5 would touch or delete.
@@ -158,13 +169,14 @@ def group_config():
                 handle.write(content)
         before = listing(directory)
         code, out, err = run_to_exit("rlg-badcfg", {variable: value}, directory)
-        untouched = listing(directory) == before
-        if not (code == 1 and variable in err and out == "" and untouched):
-            failures.append(f"{variable}={value!r}: exit={code} stderr={err.strip()!r} stdout={out!r} untouched={untouched}")
+        if not (code == 1 and variable in err and out == ""):
+            failures.append(f"{variable}={value!r}: exit={code} stderr={err.strip()!r} stdout={out!r}")
+        if listing(directory) != before:
+            touched.append(f"{variable}={value!r}: {listing(directory)}")
     record("invalid settings are rejected", not failures,
            f"{len(bad)} invalid values tried; " + ("all exit 1 with the variable named on stderr" if not failures else "; ".join(failures)))
-    record("invalid settings touch no file", not failures,
-           "pre-existing app.log and app.log.9 unchanged in every case" if not failures else "see A2")
+    record("invalid settings touch no file", not touched,
+           "pre-existing app.log and app.log.9 unchanged in every case" if not touched else "; ".join(touched))
 
     cap_cases = [
         ({"LOG_MAX_FILE_MIB": "300", "LOG_MAX_FILES": "4"}, 1, "300x4 > default cap 1024"),
@@ -231,12 +243,14 @@ def group_rate():
             gaps = [b - a for a, b in zip(times, times[1:])]
             rates = reported_rates(m["stdout"])
             ok = bool(gaps) and min(gaps) >= 0.95 and max(gaps) <= 1.25 and all(abs(r - 1.0) <= 0.02 for r in rates[1:])
+            gap_text = f"min {min(gaps):.3f} s, max {max(gaps):.3f} s" if gaps else "too few reports to measure"
+            rate_text = f"{min(rates):.2f}..{max(rates):.2f}" if rates else "none"
             record("report cadence and value", ok,
-                   f"{len(gaps)} gaps between reports: min {min(gaps):.3f} s, max {max(gaps):.3f} s; reported rates {min(rates):.2f}..{max(rates):.2f}")
+                   f"{len(gaps)} gaps between reports: {gap_text}; reported rates {rate_text}")
 
     m = measure_rate("rate-1000", 1000, "json", 30, max_file_mib=10, max_files=5)
     rates = reported_rates(m["stdout"])
-    steady = rates[3:-1] or rates
+    steady = rates[3:-1] or rates or [0.0]
     mean_reported = sum(steady) / len(steady)
     ok = m["exit"] == 0 and m["stderr"] == "" and abs(mean_reported - m["actual_mib_s"]) <= 0.05 * m["actual_mib_s"]
     record("rate above capacity (1000 MiB/s asked)", ok,
@@ -378,22 +392,22 @@ def group_faults():
     time.sleep(3)
     sh("podman", "pause", "rlg-pause")
     time.sleep(0.3)
-    t1, s1 = time.monotonic(), last_seq(directory, "json")
+    seq_when_paused = last_seq(directory, "json")
     time.sleep(8)
     sh("podman", "unpause", "rlg-pause")
+    resumed = time.monotonic()
     time.sleep(4)
-    t2, s2 = time.monotonic(), last_seq(directory, "json")
+    unpaused_seconds, seq_after = time.monotonic() - resumed, last_seq(directory, "json")
     stop("rlg-pause")
     out, _ = logs("rlg-pause")
     remove("rlg-pause")
-    written_mib = (s2 - s1) * LINE / MIB
-    unpaused_seconds = 4.0
+    written_mib = (seq_after - seq_when_paused) * LINE / MIB
     caught_up = written_mib - rate * unpaused_seconds
     summary = check(directory, "json", 200, 5)
-    peak = max(reported_rates(out))
+    peak = max(reported_rates(out), default=0.0)
     ok = summary["ok"] and 0.5 * rate <= caught_up <= 1.25 * rate
     record("paused 8 s, then resumed", ok,
-           f"wrote {written_mib:.1f} MiB in the 4 s after resuming = {rate * unpaused_seconds:.0f} MiB at rate + {caught_up:.1f} MiB caught up "
+           f"wrote {written_mib:.1f} MiB in the {unpaused_seconds:.1f} s after resuming = {rate * unpaused_seconds:.0f} MiB at rate + {caught_up:.1f} MiB caught up "
            f"(1 s of output is {rate} MiB; the 8 s pause was worth {rate * 8} MiB); highest reported rate {peak:.2f} MiB/s; "
            f"{summary['problem_count']} problems in the files")
 
@@ -482,17 +496,15 @@ def group_faults():
     helper = sh("podman", "run", "-d", "--name", "rlg-full-helper", "-v", "rlg-full:/logs",
                 "docker.io/library/busybox:1.37", "sleep", "600")
     if made.returncode != 0 or helper.returncode != 0:
-        record("disk full", None, f"could not set up a small volume: {made.stderr.strip()} {helper.stderr.strip()}")
+        # Not being able to run the check is a failure, not something to pass over.
+        record("disk full", False, f"could not set up a small volume: {made.stderr.strip()} {helper.stderr.strip()}")
         return
     env = ["-e", "LOG_RATE_MIB=20", "-e", "LOG_MAX_FILE_MIB=3", "-e", "LOG_MAX_FILES=5"]
 
     def run_on_full_volume():
         sh("podman", "rm", "-f", "rlg-full")
         sh("podman", "run", "-d", "--name", "rlg-full", *env, "-v", "rlg-full:/logs", IMAGE)
-        try:
-            code = wait("rlg-full", timeout=15)
-        except subprocess.TimeoutExpired:
-            code = None
+        code = wait("rlg-full", timeout=15)
         out, err = logs("rlg-full")
         return code, out, err
 
@@ -547,7 +559,12 @@ def main():
     try:
         for name in chosen:
             print(f"== {name}", flush=True)
-            GROUPS[name]()
+            try:
+                GROUPS[name]()
+            except Exception as error:  # a check that cannot finish has failed
+                record(f"{name} group", False, f"stopped by {type(error).__name__}: {error}")
+            finally:
+                cleanup()
     finally:
         shutil.rmtree(BASE, ignore_errors=True)
     checks = [r for r in RESULTS if r["status"] != "INFO"]
