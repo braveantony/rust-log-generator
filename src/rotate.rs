@@ -256,6 +256,48 @@ mod tests {
     }
 
     #[test]
+    fn keeps_exactly_max_files_when_more_than_four_are_allowed() {
+        for max_files in [5, 6] {
+            let dir = TempDir::new();
+            let mut writer = RotatingWriter::new(&dir.0, 4, max_files).unwrap();
+            let lines: Vec<String> = (0..10).map(|number| format!("{number:03}\n")).collect();
+            for line in &lines {
+                writer.write_line(line.as_bytes()).unwrap();
+            }
+            writer.flush().unwrap();
+            // One line per file: the newest max_files lines remain, newest first.
+            assert_eq!(dir.file_names().len(), max_files, "max_files {max_files}");
+            assert_eq!(dir.read("app.log"), lines[9]);
+            for slot in 1..max_files {
+                assert_eq!(dir.read(&format!("app.log.{slot}")), lines[9 - slot]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_longer_than_the_max_still_goes_into_an_empty_file() {
+        let dir = TempDir::new();
+        let mut writer = RotatingWriter::new(&dir.0, 2, 5).unwrap();
+        write_all(&mut writer, &["aaa\n"]);
+        assert_eq!(dir.read("app.log"), "aaa\n");
+        assert_eq!(dir.file_names(), ["app.log"]);
+    }
+
+    #[test]
+    fn a_rotation_that_cannot_move_a_file_reports_the_error() {
+        // A directory where app.log.1 should go. With two files allowed
+        // nothing is shifted first, so the active file is renamed straight
+        // onto the directory: that fails, and not because something is missing.
+        let dir = TempDir::new();
+        fs::create_dir(dir.0.join("app.log.1")).unwrap();
+        fs::write(dir.0.join("app.log.1").join("in-the-way"), "x").unwrap();
+        let mut writer = RotatingWriter::new(&dir.0, 4, 2).unwrap();
+        writer.write_line(b"aaa\n").unwrap();
+        let err = writer.write_line(b"bbb\n").unwrap_err();
+        assert_ne!(err.kind(), io::ErrorKind::NotFound, "{err}");
+    }
+
+    #[test]
     fn with_a_single_file_rotation_starts_the_file_over() {
         let dir = TempDir::new();
         let mut writer = RotatingWriter::new(&dir.0, 4, 1).unwrap();

@@ -110,6 +110,27 @@ mod tests {
     }
 
     #[test]
+    fn timestamps_around_century_and_leap_year_boundaries() {
+        // The Gregorian rules differ at each of these: 2000 and 2400 are leap
+        // years, 2100 and 2200 are not. The expected values come from another
+        // implementation (Python's datetime).
+        let cases = [
+            (951_825_600_000, "2000-02-29T12:00:00.000Z"),
+            (951_868_800_000, "2000-03-01T00:00:00.000Z"),
+            (2_147_483_648_000, "2038-01-19T03:14:08.000Z"),
+            (4_107_542_399_999, "2100-02-28T23:59:59.999Z"),
+            (4_107_542_400_000, "2100-03-01T00:00:00.000Z"),
+            (7_263_216_000_000, "2200-03-01T00:00:00.000Z"),
+            (13_574_649_599_999, "2400-02-29T23:59:59.999Z"),
+            (13_574_649_600_000, "2400-03-01T00:00:00.000Z"),
+            (253_402_300_799_999, "9999-12-31T23:59:59.999Z"),
+        ];
+        for (unix_millis, expected) in cases {
+            assert_eq!(format_timestamp(unix_millis), expected);
+        }
+    }
+
+    #[test]
     fn json_line_is_exactly_line_bytes_and_newline_terminated() {
         let line = line(true, BILLENNIUM_MILLIS, 42);
         assert_eq!(line.len(), LINE_BYTES);
