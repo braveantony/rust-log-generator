@@ -9,7 +9,9 @@ FROM docker.io/library/rust:1.99.1-alpine3.24@sha256:f432d4b8663fbc50b29e33846bf
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-COPY tests ./tests
+# Only the Rust tests: tests/image holds checks that run against a finished
+# image, and copying them would rebuild this stage whenever they change.
+COPY tests/e2e.rs ./tests/e2e.rs
 RUN cargo test --locked \
     && cargo build --release --locked \
     && mkdir /logs

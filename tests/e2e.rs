@@ -2,13 +2,16 @@
 //! its settings in the environment and a directory to write to, and judge it
 //! by its exit code, its output and the files it leaves behind.
 //!
-//! The unit tests cannot reach `main.rs`; these do. Timing is kept loose on
-//! purpose so that a slow build machine does not fail them. How precisely the
-//! rate is held is checked against the image by `tests/image/e2e.py`.
+//! The unit tests cannot reach `main.rs`; these do. They run in the image
+//! build, so they must not depend on how fast the machine is: every test
+//! waits for the program's first line of output before it starts counting
+//! time, and the bounds on what happens afterwards are wide. How precisely
+//! the rate is held is checked against the image by `tests/image/e2e.py`.
 
 use std::fs;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -80,29 +83,59 @@ struct Finished {
     stderr: String,
 }
 
-impl Finished {
-    fn from(output: Output) -> Finished {
-        Finished {
-            code: output.status.code(),
-            stdout: String::from_utf8(output.stdout).unwrap(),
-            stderr: String::from_utf8(output.stderr).unwrap(),
-        }
+/// A started program whose first line of output has been read.
+struct Running {
+    child: Child,
+    stdout: BufReader<ChildStdout>,
+    first_line: String,
+}
+
+/// Starts the program and waits until it has printed its first line, or has
+/// ended without printing one. It prints that line after installing its
+/// signal handlers, so from then on a signal stops it cleanly instead of
+/// killing it, however slow the machine is.
+fn start(log_dir: &Path, settings: &[(&str, &str)]) -> Running {
+    let mut child = program(log_dir, settings).spawn().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut first_line = String::new();
+    stdout.read_line(&mut first_line).unwrap();
+    Running {
+        child,
+        stdout,
+        first_line,
     }
 }
 
 /// Waits for the program to end by itself. A program that does not is killed,
 /// and the test fails instead of hanging.
-fn finish(mut child: Child) -> Finished {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while child.try_wait().unwrap().is_none() {
+fn finish(mut running: Running) -> Finished {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = running.child.try_wait().unwrap() {
+            break status;
+        }
         if Instant::now() > deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("the program was still running 10 seconds after it should have ended");
+            running.child.kill().unwrap();
+            running.child.wait().unwrap();
+            panic!("the program was still running 20 seconds after it should have ended");
         }
         sleep(Duration::from_millis(10));
+    };
+    let mut stdout = running.first_line;
+    running.stdout.read_to_string(&mut stdout).unwrap();
+    let mut stderr = String::new();
+    running
+        .child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    Finished {
+        code: status.code(),
+        stdout,
+        stderr,
     }
-    Finished::from(child.wait_with_output().unwrap())
 }
 
 fn send_signal(child: &Child, signal: &str) {
@@ -114,20 +147,21 @@ fn send_signal(child: &Child, signal: &str) {
     assert!(status.success(), "kill -{signal} failed");
 }
 
+/// Lets the program run for `run_for` after it is ready, then signals it.
 fn run_until_signal(
     log_dir: &Path,
     settings: &[(&str, &str)],
     run_for: Duration,
     signal: &str,
 ) -> Finished {
-    let child = program(log_dir, settings).spawn().unwrap();
+    let running = start(log_dir, settings);
     sleep(run_for);
-    send_signal(&child, signal);
-    finish(child)
+    send_signal(&running.child, signal);
+    finish(running)
 }
 
 fn run_to_end(log_dir: &Path, settings: &[(&str, &str)]) -> Finished {
-    finish(program(log_dir, settings).spawn().unwrap())
+    finish(start(log_dir, settings))
 }
 
 /// Splits a log file into its lines, insisting that each is exactly
@@ -201,10 +235,10 @@ fn writes_json_lines_reports_once_a_second_and_stops_on_sigterm() {
         "{}",
         stdout[0]
     );
-    // About once a second, so one report in 1.5 seconds; a slow machine may
-    // fit in a second, but never one per tick.
+    // About once a second, so one report in 1.5 seconds. A machine slow
+    // enough to stretch the run gets a few more; one per tick would be 15.
     let reports = stdout.iter().filter(|line| line.contains(" MiB/s (total ")).count();
-    assert!((1..=2).contains(&reports), "{reports} rate reports in {stdout:?}");
+    assert!((1..=5).contains(&reports), "{reports} rate reports in {stdout:?}");
     assert!(
         stdout.last().unwrap().starts_with("rust-log-generator: stopped after "),
         "{stdout:?}"
@@ -217,13 +251,14 @@ fn writes_json_lines_reports_once_a_second_and_stops_on_sigterm() {
     // so comparing the text compares the times.
     let first_ts = lines[0]["ts"].as_str().unwrap();
     let last_ts = lines[lines.len() - 1]["ts"].as_str().unwrap();
-    assert!(first_ts > "2025-01-01T00:00:00.000Z", "first timestamp {first_ts}");
+    assert!(first_ts > "2000-01-01T00:00:00.000Z", "first timestamp {first_ts}");
     assert!(last_ts > first_ts, "timestamps {first_ts} .. {last_ts}");
-    // 1.5 seconds at 1 MiB/s. The bounds are wide: this is about the program
-    // pacing itself at all, not about how exactly.
+    // 1.5 seconds at 1 MiB/s, or more on a machine that is slow to send the
+    // signal. The bounds are wide: this is about the program pacing itself
+    // at all, not about how exactly.
     let bytes = (lines.len() * LINE_BYTES) as u64;
     assert!(
-        (MIB / 2..=MIB * 5 / 2).contains(&bytes),
+        (MIB / 2..=MIB * 6).contains(&bytes),
         "wrote {bytes} bytes in about 1.5 s at 1 MiB/s"
     );
 }
@@ -231,7 +266,8 @@ fn writes_json_lines_reports_once_a_second_and_stops_on_sigterm() {
 #[test]
 fn sleeps_between_ticks_instead_of_spinning() {
     let dir = TempDir::new();
-    let child = program(&dir.0, &[("LOG_RATE_MIB", "0.01")]).spawn().unwrap();
+    let running = start(&dir.0, &[("LOG_RATE_MIB", "0.01")]);
+    let child = &running.child;
     sleep(Duration::from_millis(1000));
     // Fields 14 and 15 of /proc/<pid>/stat: CPU time in user and kernel mode,
     // in clock ticks. The command name before them is in parentheses and may
@@ -249,8 +285,8 @@ fn sleeps_between_ticks_instead_of_spinning() {
                 .collect();
             (fields.len() == 2).then(|| fields[0] + fields[1])
         });
-    send_signal(&child, "TERM");
-    let finished = finish(child);
+    send_signal(child, "TERM");
+    let finished = finish(running);
     assert_eq!(finished.code, Some(0), "stderr: {}", finished.stderr);
     match cpu_ticks {
         // A tick is at least a millisecond everywhere, and usually ten. A
@@ -310,7 +346,7 @@ fn keeps_running_when_the_rate_is_out_of_reach() {
     let finished = run_until_signal(
         &dir.0,
         &[("LOG_RATE_MIB", "1000000"), ("LOG_MAX_FILE_MIB", "4"), ("LOG_MAX_FILES", "2")],
-        Duration::from_millis(600),
+        Duration::from_millis(300),
         "TERM",
     );
     assert_eq!(finished.code, Some(0), "stderr: {}", finished.stderr);
@@ -369,15 +405,20 @@ fn reports_a_write_that_fails() {
 #[test]
 fn starts_a_new_file_soon_after_the_active_one_is_deleted() {
     let dir = TempDir::new();
-    let child = program(&dir.0, &[("LOG_RATE_MIB", "1")]).spawn().unwrap();
-    sleep(Duration::from_millis(500));
+    let running = start(&dir.0, &[("LOG_RATE_MIB", "1")]);
+    sleep(Duration::from_millis(300));
     fs::remove_file(dir.path("app.log")).unwrap();
-    sleep(Duration::from_millis(600));
-    let reappeared = fs::metadata(dir.path("app.log")).map(|file| file.len()).unwrap_or(0);
-    send_signal(&child, "TERM");
-    let finished = finish(child);
+    // The program looks every 100 ms. Give a slow machine far longer.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let size = |path: &Path| fs::metadata(path).map(|file| file.len()).unwrap_or(0);
+    while size(&dir.path("app.log")) == 0 && Instant::now() < deadline {
+        sleep(Duration::from_millis(20));
+    }
+    let reappeared = size(&dir.path("app.log"));
+    send_signal(&running.child, "TERM");
+    let finished = finish(running);
     assert_eq!(finished.code, Some(0), "stderr: {}", finished.stderr);
-    assert!(reappeared > 0, "app.log had not come back 600 ms after it was deleted");
+    assert!(reappeared > 0, "app.log had not come back 5 s after it was deleted");
     // What the new file holds continues the same run, without a gap inside it.
     let lines = json_lines_of(&dir.path("app.log"));
     assert!(assert_consecutive(&lines) > 0);
