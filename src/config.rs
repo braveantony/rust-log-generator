@@ -15,11 +15,19 @@ impl Config {
     /// rejected with a message naming the offending variable.
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
         // Validated after converting to bytes: a huge but finite MiB value can
-        // still overflow to infinity in the conversion.
+        // still overflow to infinity in the conversion. Below one byte per
+        // second the pacer never asks for a whole line, so the program would
+        // run without ever writing anything.
         let rate_bytes_per_sec = match lookup("LOG_RATE_MIB") {
             None => MIB as f64,
             Some(raw) => match raw.trim().parse::<f64>().map(|mib| mib * MIB as f64) {
-                Ok(bytes) if bytes.is_finite() && bytes > 0.0 => bytes,
+                Ok(bytes) if bytes.is_finite() && bytes >= 1.0 => bytes,
+                Ok(bytes) if bytes > 0.0 && bytes < 1.0 => {
+                    return Err(format!(
+                        "LOG_RATE_MIB must be at least 1 byte per second \
+                         (about 0.00000096 MiB), got {raw:?}"
+                    ))
+                }
                 _ => {
                     return Err(format!(
                         "LOG_RATE_MIB must be a positive number, got {raw:?}"
@@ -159,6 +167,24 @@ mod tests {
             let err = config_from(&[("LOG_RATE_MIB", bad)]).unwrap_err();
             assert!(err.contains("LOG_RATE_MIB"), "{bad:?} gave: {err}");
         }
+    }
+
+    #[test]
+    fn rejects_a_rate_below_one_byte_per_second() {
+        // Such a rate never adds up to a whole line: the program would run
+        // without ever writing anything.
+        for too_slow in ["0.0000005", "1e-300", "0.00000095"] {
+            let err = config_from(&[("LOG_RATE_MIB", too_slow)]).unwrap_err();
+            assert!(err.contains("LOG_RATE_MIB"), "{too_slow:?} gave: {err}");
+            assert!(err.contains("1 byte per second"), "{too_slow:?} gave: {err}");
+        }
+    }
+
+    #[test]
+    fn accepts_a_rate_of_exactly_one_byte_per_second() {
+        // 2^-20 MiB is one byte.
+        let config = config_from(&[("LOG_RATE_MIB", "0.00000095367431640625")]).unwrap();
+        assert_eq!(config.rate_bytes_per_sec, 1.0);
     }
 
     #[test]
