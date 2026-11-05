@@ -1,0 +1,15 @@
+# The program takes no input from the network and makes no connections; it
+# only writes files. So every pod in this namespace is denied all inbound and
+# outbound traffic, DNS included. Image pulls still work: the node pulls
+# images, not the pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  labels:
+    app.kubernetes.io/name: rust-log-generator
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

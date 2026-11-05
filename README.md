@@ -46,7 +46,7 @@ rust-log-generator 是用 Rust 寫的 log 產生器，會依照你設定的速�
 kubectl apply -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/overlay/prod?ref=main'
 ```
 
-這會建立 `rust-log-generator` 這個 namespace，以及裡面存放設定值的 ConfigMap、1 GiB 的 PersistentVolumeClaim（PVC，向叢集申請的一塊儲存空間）和 Deployment（負責建立 Pod 並讓它持續執行）。Pod（Kubernetes 執行 container 的最小單位）啟動後以 1 MiB/s 寫入 JSON log，檔案最多占 500 MiB。
+這會建立 `rust-log-generator` 這個 namespace，以及裡面存放設定值的 ConfigMap、1 GiB 的 PersistentVolumeClaim（PVC，向叢集申請的一塊儲存空間）、Deployment（負責建立 Pod 並讓它持續執行），以及禁止所有網路連線的 NetworkPolicy。Pod（Kubernetes 執行 container 的最小單位）啟動後以 1 MiB/s 寫入 JSON log，檔案最多占 500 MiB。
 
 確認已經在執行：
 
@@ -160,13 +160,14 @@ flowchart LR
 | 目錄 | 內容 |
 |---|---|
 | `k8s/base` | Deployment、PVC，以及存放設定值的 ConfigMap |
-| `k8s/overlay/prod` | 在 base 之上加入 namespace、Pod Security Standards `restricted`（Kubernetes 內建最嚴格的 Pod 安全等級）要求的安全設定，以及唯讀的根檔案系統 |
+| `k8s/overlay/prod` | 在 base 之上加入 namespace、Pod Security Standards `restricted`（Kubernetes 內建最嚴格的 Pod 安全等級）要求的安全設定、唯讀的根檔案系統，以及禁止所有網路連線的 NetworkPolicy |
 
 `k8s/overlay/prod` 加上的安全設定：
 
 - namespace 啟用 Pod Security Standards `restricted`，不符合的 Pod 會被拒絕。
 - container 以非 root 身分執行（UID 65532）、不能提升權限、移除所有 Linux capabilities（從 root 權限拆出來的各項特權）、啟用預設的 seccomp 設定（限制 process 能用的系統呼叫）。
 - 根檔案系統唯讀，只有 `/logs` 可以寫入。
+- NetworkPolicy 禁止 namespace 裡所有 Pod 的對內和對外連線，包含 DNS。程式只寫檔案，不需要網路。叢集的網路外掛（CNI）要支援 NetworkPolicy，這項限制才會生效。
 
 另外有兩點要注意：
 
