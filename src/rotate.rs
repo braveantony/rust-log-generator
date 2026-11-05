@@ -1,5 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
+use std::mem;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 pub const FILE_NAME: &str = "app.log";
@@ -43,7 +45,33 @@ impl RotatingWriter {
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
+        self.follow_replaced_file()?;
         self.file.flush()
+    }
+
+    /// If someone deleted `app.log` or put another file in its place, the open
+    /// file is no longer the one readers see, and lines would keep going to a
+    /// file without a name until the next rotation. This switches to whatever
+    /// is at the path now, creating the file if it is gone, and takes along
+    /// the lines that are still buffered.
+    fn follow_replaced_file(&mut self) -> io::Result<()> {
+        let ours = self.file.get_ref().metadata()?;
+        let still_ours = match fs::metadata(self.dir.join(FILE_NAME)) {
+            Ok(at_path) => at_path.dev() == ours.dev() && at_path.ino() == ours.ino(),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+            Err(err) => return Err(err),
+        };
+        if still_ours {
+            return Ok(());
+        }
+        let (file, size) = open_active(&self.dir)?;
+        let (_, buffered) = mem::replace(&mut self.file, file).into_parts();
+        // The buffer is only unavailable after a panic inside a write, and a
+        // panic does not come back here.
+        let buffered = buffered.unwrap_or_default();
+        self.file.write_all(&buffered)?;
+        self.size = size + buffered.len() as u64;
+        Ok(())
     }
 
     fn rotate(&mut self) -> io::Result<()> {
@@ -264,6 +292,41 @@ mod tests {
         write_all(&mut writer, &["aaa\n", "bbb\n"]);
         fs::remove_file(dir.0.join("app.log")).unwrap();
         write_all(&mut writer, &["ccc\n"]);
+        assert_eq!(dir.read("app.log"), "ccc\n");
+    }
+
+    #[test]
+    fn a_deleted_active_file_is_recreated_at_the_next_flush() {
+        let dir = TempDir::new();
+        let mut writer = RotatingWriter::new(&dir.0, 1024, 5).unwrap();
+        write_all(&mut writer, &["aaa\n"]);
+        fs::remove_file(dir.0.join("app.log")).unwrap();
+        write_all(&mut writer, &["bbb\n", "ccc\n"]);
+        assert_eq!(dir.read("app.log"), "bbb\nccc\n");
+    }
+
+    #[test]
+    fn follows_a_file_that_replaced_the_active_one() {
+        let dir = TempDir::new();
+        let mut writer = RotatingWriter::new(&dir.0, 1024, 5).unwrap();
+        write_all(&mut writer, &["aaa\n"]);
+        fs::rename(dir.0.join("app.log"), dir.0.join("moved.log")).unwrap();
+        fs::write(dir.0.join("app.log"), "external\n").unwrap();
+        write_all(&mut writer, &["bbb\n"]);
+        assert_eq!(dir.read("moved.log"), "aaa\n");
+        assert_eq!(dir.read("app.log"), "external\nbbb\n");
+    }
+
+    #[test]
+    fn counts_the_size_of_a_file_that_replaced_the_active_one() {
+        let dir = TempDir::new();
+        let mut writer = RotatingWriter::new(&dir.0, 12, 5).unwrap();
+        write_all(&mut writer, &["aaa\n"]);
+        fs::remove_file(dir.0.join("app.log")).unwrap();
+        fs::write(dir.0.join("app.log"), "ext\next\n").unwrap();
+        write_all(&mut writer, &["bbb\n"]);
+        write_all(&mut writer, &["ccc\n"]);
+        assert_eq!(dir.read("app.log.1"), "ext\next\nbbb\n");
         assert_eq!(dir.read("app.log"), "ccc\n");
     }
 
