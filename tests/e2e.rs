@@ -201,10 +201,10 @@ fn writes_json_lines_reports_once_a_second_and_stops_on_sigterm() {
         "{}",
         stdout[0]
     );
-    assert!(
-        stdout.iter().any(|line| line.contains(" MiB/s (total ")),
-        "no rate report in {stdout:?}"
-    );
+    // About once a second, so one report in 1.5 seconds; a slow machine may
+    // fit in a second, but never one per tick.
+    let reports = stdout.iter().filter(|line| line.contains(" MiB/s (total ")).count();
+    assert!((1..=2).contains(&reports), "{reports} rate reports in {stdout:?}");
     assert!(
         stdout.last().unwrap().starts_with("rust-log-generator: stopped after "),
         "{stdout:?}"
@@ -213,6 +213,12 @@ fn writes_json_lines_reports_once_a_second_and_stops_on_sigterm() {
     assert_eq!(dir.file_names(), ["app.log"]);
     let lines = json_lines_of(&dir.path("app.log"));
     assert_eq!(assert_consecutive(&lines), 0);
+    // Timestamps are the current time and move on. The format is fixed-width,
+    // so comparing the text compares the times.
+    let first_ts = lines[0]["ts"].as_str().unwrap();
+    let last_ts = lines[lines.len() - 1]["ts"].as_str().unwrap();
+    assert!(first_ts > "2025-01-01T00:00:00.000Z", "first timestamp {first_ts}");
+    assert!(last_ts > first_ts, "timestamps {first_ts} .. {last_ts}");
     // 1.5 seconds at 1 MiB/s. The bounds are wide: this is about the program
     // pacing itself at all, not about how exactly.
     let bytes = (lines.len() * LINE_BYTES) as u64;
@@ -220,6 +226,38 @@ fn writes_json_lines_reports_once_a_second_and_stops_on_sigterm() {
         (MIB / 2..=MIB * 5 / 2).contains(&bytes),
         "wrote {bytes} bytes in about 1.5 s at 1 MiB/s"
     );
+}
+
+#[test]
+fn sleeps_between_ticks_instead_of_spinning() {
+    let dir = TempDir::new();
+    let child = program(&dir.0, &[("LOG_RATE_MIB", "0.01")]).spawn().unwrap();
+    sleep(Duration::from_millis(1000));
+    // Fields 14 and 15 of /proc/<pid>/stat: CPU time in user and kernel mode,
+    // in clock ticks. The command name before them is in parentheses and may
+    // contain spaces, so count from the closing one.
+    let cpu_ticks = fs::read_to_string(format!("/proc/{}/stat", child.id()))
+        .ok()
+        .and_then(|stat| {
+            let fields: Vec<u64> = stat
+                .rsplit_once(')')?
+                .1
+                .split_whitespace()
+                .skip(11)
+                .take(2)
+                .filter_map(|field| field.parse().ok())
+                .collect();
+            (fields.len() == 2).then(|| fields[0] + fields[1])
+        });
+    send_signal(&child, "TERM");
+    let finished = finish(child);
+    assert_eq!(finished.code, Some(0), "stderr: {}", finished.stderr);
+    match cpu_ticks {
+        // A tick is at least a millisecond everywhere, and usually ten. A
+        // program that never slept would have used a whole second of CPU.
+        Some(ticks) => assert!(ticks <= 30, "used {ticks} clock ticks of CPU in one second"),
+        None => eprintln!("skipped: /proc/<pid>/stat is not readable on this system"),
+    }
 }
 
 #[test]

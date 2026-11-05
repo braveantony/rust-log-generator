@@ -166,6 +166,8 @@ mod tests {
         for bad in ["abc", "", "0", "-1", "NaN", "inf", "1e305"] {
             let err = config_from(&[("LOG_RATE_MIB", bad)]).unwrap_err();
             assert!(err.contains("LOG_RATE_MIB"), "{bad:?} gave: {err}");
+            // Not the message for a rate that is merely too low.
+            assert!(err.contains("positive number"), "{bad:?} gave: {err}");
         }
     }
 

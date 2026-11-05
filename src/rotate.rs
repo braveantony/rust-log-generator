@@ -362,14 +362,20 @@ mod tests {
     #[test]
     fn counts_the_size_of_a_file_that_replaced_the_active_one() {
         let dir = TempDir::new();
-        let mut writer = RotatingWriter::new(&dir.0, 12, 5).unwrap();
+        let mut writer = RotatingWriter::new(&dir.0, 16, 5).unwrap();
         write_all(&mut writer, &["aaa\n"]);
         fs::remove_file(dir.0.join("app.log")).unwrap();
         fs::write(dir.0.join("app.log"), "ext\next\n").unwrap();
+        // 8 bytes already there plus this line: 12 of the 16 allowed.
         write_all(&mut writer, &["bbb\n"]);
+        // Exactly full, so not rotated yet.
         write_all(&mut writer, &["ccc\n"]);
-        assert_eq!(dir.read("app.log.1"), "ext\next\nbbb\n");
-        assert_eq!(dir.read("app.log"), "ccc\n");
+        assert_eq!(dir.read("app.log"), "ext\next\nbbb\nccc\n");
+        assert_eq!(dir.file_names(), ["app.log"]);
+        // One more line does not fit.
+        write_all(&mut writer, &["ddd\n"]);
+        assert_eq!(dir.read("app.log.1"), "ext\next\nbbb\nccc\n");
+        assert_eq!(dir.read("app.log"), "ddd\n");
     }
 
     #[test]
