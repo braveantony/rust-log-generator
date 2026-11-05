@@ -31,6 +31,15 @@ spec:
           envFrom:
             - configMapRef:
                 name: rust-log-generator-config
+          env:
+            # Cap on LOG_MAX_FILE_MIB x LOG_MAX_FILES; the program refuses to
+            # start above it. It sits just under the size of the PVC and is set
+            # here, not in the ConfigMap, because `env` wins over `envFrom`:
+            # changing the ConfigMap alone cannot raise it. Not every storage
+            # class enforces the PVC size, so this is what keeps the log files
+            # from filling the node's disk.
+            - name: LOG_MAX_TOTAL_MIB
+              value: "900"
           volumeMounts:
             - name: logs
               mountPath: /logs

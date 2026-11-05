@@ -43,11 +43,31 @@ impl Config {
             Some(raw) => PathBuf::from(raw),
         };
 
-        let max_file_bytes = positive_integer(&lookup, "LOG_MAX_FILE_MIB", 100)?
+        let max_file_mib = positive_integer(&lookup, "LOG_MAX_FILE_MIB", 100)?;
+        let max_file_count = positive_integer(&lookup, "LOG_MAX_FILES", 5)?;
+
+        // Rotation keeps at most max_file_count files of max_file_mib each, so
+        // their product is the disk space the log files can take. It must be
+        // capped here because the storage may not do it: a volume without an
+        // enforced quota lets the files fill the disk it shares with others.
+        // An overflowing product is certainly above any cap.
+        let max_total_mib = positive_integer(&lookup, "LOG_MAX_TOTAL_MIB", 1024)?;
+        let within_cap = max_file_mib
+            .checked_mul(max_file_count)
+            .is_some_and(|total_mib| total_mib <= max_total_mib);
+        if !within_cap {
+            return Err(format!(
+                "LOG_MAX_FILE_MIB ({max_file_mib}) x LOG_MAX_FILES ({max_file_count}) \
+                 exceeds LOG_MAX_TOTAL_MIB ({max_total_mib}), the cap on disk space \
+                 used by log files"
+            ));
+        }
+
+        let max_file_bytes = max_file_mib
             .checked_mul(MIB)
             .ok_or_else(|| "LOG_MAX_FILE_MIB is too large".to_string())?;
 
-        let max_files = usize::try_from(positive_integer(&lookup, "LOG_MAX_FILES", 5)?)
+        let max_files = usize::try_from(max_file_count)
             .map_err(|_| "LOG_MAX_FILES is too large".to_string())?;
 
         Ok(Config {
@@ -173,5 +193,59 @@ mod tests {
             let err = config_from(&[("LOG_MAX_FILES", bad)]).unwrap_err();
             assert!(err.contains("LOG_MAX_FILES"), "{bad:?} gave: {err}");
         }
+    }
+
+    #[test]
+    fn rejects_rotation_settings_above_the_default_total_cap() {
+        // 300 MiB x 4 files = 1200 MiB, above the default cap of 1024 MiB.
+        let err =
+            config_from(&[("LOG_MAX_FILE_MIB", "300"), ("LOG_MAX_FILES", "4")]).unwrap_err();
+        assert!(err.contains("LOG_MAX_TOTAL_MIB"), "{err}");
+    }
+
+    #[test]
+    fn accepts_rotation_settings_exactly_at_the_total_cap() {
+        let config =
+            config_from(&[("LOG_MAX_FILE_MIB", "256"), ("LOG_MAX_FILES", "4")]).unwrap();
+        assert_eq!(config.max_file_bytes, 256 * 1024 * 1024);
+        assert_eq!(config.max_files, 4);
+    }
+
+    #[test]
+    fn the_total_cap_can_be_raised() {
+        let config = config_from(&[
+            ("LOG_MAX_FILE_MIB", "300"),
+            ("LOG_MAX_FILES", "4"),
+            ("LOG_MAX_TOTAL_MIB", "1200"),
+        ])
+        .unwrap();
+        assert_eq!(config.max_files, 4);
+    }
+
+    #[test]
+    fn the_total_cap_can_be_lowered_below_the_default_rotation_settings() {
+        // The defaults keep 5 x 100 MiB = 500 MiB.
+        let err = config_from(&[("LOG_MAX_TOTAL_MIB", "400")]).unwrap_err();
+        assert!(err.contains("LOG_MAX_TOTAL_MIB"), "{err}");
+    }
+
+    #[test]
+    fn rejects_a_total_cap_that_is_not_a_positive_integer() {
+        for bad in ["0", "-1", "1.5", "lots"] {
+            let err = config_from(&[("LOG_MAX_TOTAL_MIB", bad)]).unwrap_err();
+            assert!(err.contains("LOG_MAX_TOTAL_MIB"), "{bad:?} gave: {err}");
+        }
+    }
+
+    #[test]
+    fn a_total_that_overflows_is_rejected_rather_than_wrapped() {
+        // 2^32 MiB x 2^32 files wraps to 0 in 64-bit arithmetic.
+        let err = config_from(&[
+            ("LOG_MAX_FILE_MIB", "4294967296"),
+            ("LOG_MAX_FILES", "4294967296"),
+            ("LOG_MAX_TOTAL_MIB", "18446744073709551615"),
+        ])
+        .unwrap_err();
+        assert!(err.contains("LOG_MAX_TOTAL_MIB"), "{err}");
     }
 }

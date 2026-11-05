@@ -1,4 +1,5 @@
 # Sized for the default rotation settings: 5 files x 100 MiB = 500 MiB.
+# Keep LOG_MAX_TOTAL_MIB in deployment.yaml below this size.
 # No storageClassName: the cluster's default StorageClass is used.
 apiVersion: v1
 kind: PersistentVolumeClaim
