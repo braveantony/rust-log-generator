@@ -27,10 +27,10 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: rust-log-generator
-          # rust-log-generator 0.1.1, pinned by digest: a tag can be moved to a
+          # rust-log-generator 0.1.2, pinned by digest: a tag can be moved to a
           # different build, a digest cannot. Update it when a new image is
           # pushed.
-          image: registry.gitlab.com/kubeantony/rust-log-generator@sha256:c712899554bc472fac7ff1da6580e8b36c4b9b54e007cb4d7af4575e71a628ae
+          image: registry.gitlab.com/kubeantony/rust-log-generator@sha256:9526e65c87af8eb124a4fbbb57dcbc324f49eed955c526fabaa4dc4985ec9086
           envFrom:
             - configMapRef:
                 name: rust-log-generator-config

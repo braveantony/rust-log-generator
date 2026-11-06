@@ -106,7 +106,7 @@ kubectl delete -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/ove
 
 ```bash
 podman run --rm -e LOG_RATE_MIB=5 -e LOG_JSON=false -v rust-log-generator-logs:/logs \
-  registry.gitlab.com/kubeantony/rust-log-generator:0.1.1
+  registry.gitlab.com/kubeantony/rust-log-generator:0.1.2
 ```
 
 停止後 log 檔還留在 volume 裡，不需要時用 `podman volume rm rust-log-generator-logs` 刪除。
