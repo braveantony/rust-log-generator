@@ -124,26 +124,7 @@ flowchart LR
 
 **結束。** 收到 SIGTERM 或 SIGINT 後，程式把還在記憶體裡的資料寫進檔案，然後正常結束（exit code 0）。
 
-### Kubernetes 設定
-
-設定檔用 Kustomize（`kubectl` 內建的設定檔組合工具）分成兩層：
-
-| 目錄 | 內容 |
-|---|---|
-| `k8s/base` | Deployment、PVC，以及存放設定值的 ConfigMap |
-| `k8s/overlay/prod` | 在 base 之上加入 namespace、Pod Security Standards `restricted`（Kubernetes 內建最嚴格的 Pod 安全等級）要求的安全設定、唯讀的根檔案系統，以及禁止所有網路連線的 NetworkPolicy |
-
-`k8s/overlay/prod` 加上的安全設定：
-
-- namespace 啟用 Pod Security Standards `restricted`，不符合的 Pod 會被拒絕。
-- container 以非 root 身分執行（UID 65532）、不能提升權限、移除所有 Linux capabilities（從 root 權限拆出來的各項特權）、啟用預設的 seccomp 設定（限制 process 能用的系統呼叫）。
-- 根檔案系統唯讀，只有 `/logs` 可以寫入。
-- NetworkPolicy 禁止 namespace 裡所有 Pod 的對內和對外連線，包含 DNS。程式只寫檔案，不需要網路。叢集的網路外掛（CNI）要支援 NetworkPolicy，這項限制才會生效。
-
-另外有兩點要注意：
-
-- 映像檔用 digest（內容的雜湊值）指定，不是用 tag，所以部署的一定是同一份映像檔。
-- Deployment 把 `LOG_MAX_TOTAL_MIB` 設為 900，略小於 1 GiB 的 PVC。不是每種儲存空間都會強制執行 PVC 的容量限制，所以由程式自己把關。`LOG_MAX_FILE_MIB` × `LOG_MAX_FILES` 超過 900 時，Pod 會啟動失敗。要放寬的步驟見 [docs/install.md](docs/install.md)。
+Kubernetes 設定檔的結構和加上的安全設定，見 [docs/install.md](docs/install.md)。
 
 測試分成哪幾層、各自怎麼執行，見 [tests/README.md](tests/README.md)。
 
