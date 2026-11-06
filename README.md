@@ -4,7 +4,7 @@ rust-log-generator 是用 Rust 寫的 log 產生器，會依照你設定的速�
 
 適合用來測試需要穩定 log 流量的情境，例如 log 收集管線的處理量，或儲存空間的寫入效能。
 
-這個專案是和 Claude Code 一問一答開發出來的，開發過程記錄在 [docs/user-questions.md](docs/user-questions.md)。
+這個專案是和 Claude Code 一問一答開發出來的，開發過程記錄在 [docs/user-questions.md](docs/user-questions.md)。整個過程用掉的 token（模型計算文字量的單位）以 API 定價換算約 107 美元，明細和花費的時間記錄在 [docs/development-cost.md](docs/development-cost.md)。
 
 ## Key Features
 
