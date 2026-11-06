@@ -1,6 +1,6 @@
 # 安裝與設定
 
-這份文件說明怎麼把 rust-log-generator 部署到 Kubernetes、修改設定後重新套用、查看產生的 log，以及移除部署。
+這份文件說明怎麼把 rust-log-generator 部署到 Kubernetes、修改設定後重新套用、查看產生的 log，以及移除部署，最後說明設定檔的結構和加上的安全設定。
 
 只想用預設值快速試用的話，看 [README 的 Quick Start](../README.md#quick-start) 就夠了。
 
@@ -185,7 +185,9 @@ kubectl -n rust-log-generator debug "$POD" -i --image=docker.io/library/busybox:
 
 ## 需要超過 900 MiB 的時候
 
-預設的 PVC 是 1 GiB，所以 log 檔的上限設在 900 MiB。要保留更多 log，三個地方要一起改。下面以 2 GiB 的 PVC、每個檔案 300 MiB、保留 5 個（共 1500 MiB）為例：
+預設的 PVC 是 1 GiB，所以 Deployment 把 `LOG_MAX_TOTAL_MIB` 設為 900，略小於 PVC。不是每種儲存空間都會強制執行 PVC 的容量限制，所以由程式自己把關，超過時 Pod 會啟動失敗。
+
+要保留更多 log，三個地方要一起改。下面以 2 GiB 的 PVC、每個檔案 300 MiB、保留 5 個（共 1500 MiB）為例：
 
 1. `k8s/base/pvc.yaml`：把 `storage: 1Gi` 改成 `storage: 2Gi`。
 2. `k8s/base/deployment.yaml`：把 `LOG_MAX_TOTAL_MIB` 的 `value: "900"` 改成 `value: "1900"`。這個值要比 PVC 小一些。
@@ -206,6 +208,24 @@ persistentvolumeclaims "rust-log-generator-logs" is forbidden: only dynamically 
 ```
 
 這時只能先照下面的方式移除，再重新部署。原本的 log 檔會消失。
+
+## 設定檔的結構和安全設定
+
+設定檔用 Kustomize 分成兩層：
+
+| 目錄 | 內容 |
+|---|---|
+| `k8s/base` | Deployment（負責建立 Pod 並讓它持續執行）、PVC，以及存放設定值的 ConfigMap |
+| `k8s/overlay/prod` | 在 base 之上加入 namespace、Pod Security Standards `restricted`（Kubernetes 內建最嚴格的 Pod 安全等級）要求的安全設定、唯讀的根檔案系統，以及禁止所有網路連線的 NetworkPolicy |
+
+`k8s/overlay/prod` 加上的安全設定：
+
+- namespace 啟用 Pod Security Standards `restricted`，不符合的 Pod 會被拒絕。
+- container 以非 root 身分執行（UID 65532）、不能提升權限、移除所有 Linux capabilities（從 root 權限拆出來的各項特權）、啟用預設的 seccomp 設定（限制 process 能用的系統呼叫）。
+- 根檔案系統唯讀，只有 `/logs` 可以寫入。
+- NetworkPolicy 禁止 namespace 裡所有 Pod 的對內和對外連線，包含 DNS。程式只寫檔案，不需要網路。叢集的網路外掛（CNI）要支援 NetworkPolicy，這項限制才會生效。
+
+另外，映像檔用 digest（內容的雜湊值）指定，不是用 tag，所以部署的一定是同一份映像檔。
 
 ## 移除
 
