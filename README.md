@@ -4,7 +4,7 @@ rust-log-generator 是用 Rust 寫的 log 產生器，會依照你設定的速�
 
 適合用來測試需要穩定 log 流量的情境，例如 log 收集管線的處理量，或儲存空間的寫入效能。
 
-這個專案是和 Claude Code 一問一答開發出來的，開發過程記錄在 [user-questions.md](user-questions.md)。
+這個專案是和 Claude Code 一問一答開發出來的，開發過程記錄在 [docs/user-questions.md](docs/user-questions.md)。
 
 ## Key Features
 
@@ -13,19 +13,6 @@ rust-log-generator 是用 Rust 寫的 log 產生器，會依照你設定的速�
 - **磁碟用量有上限**：log 檔寫滿就輪替，只保留最近幾個檔案。
 - **檢查得出掉行**：每一行都有編號，接收端可以確認 log 有沒有漏掉。
 - **一行指令部署到 Kubernetes**：附上現成的設定檔，符合 Kubernetes 內建最嚴格的安全等級。
-
-### 設定
-
-所有設定都用環境變數，沒設定的就用預設值。設定值不合法時，程式會印出原因並結束（exit code 1）。訊息印在 stderr（程式輸出錯誤訊息的管道），在 Kubernetes 上用 `kubectl logs` 就看得到。
-
-| 環境變數 | 預設值 | 說明 |
-|---|---|---|
-| `LOG_RATE_MIB` | `1` | 每秒寫入幾 MiB，可以用小數。最小是每秒 1 byte（約 `0.00000096`），再小就寫不出完整的一行 |
-| `LOG_JSON` | `true` | `true` 輸出 JSON，`false` 輸出純文字，不分大小寫 |
-| `LOG_DIR` | `/logs` | log 檔所在的目錄，不存在時會自動建立 |
-| `LOG_MAX_FILE_MIB` | `100` | 單一檔案的大小上限（MiB），正整數 |
-| `LOG_MAX_FILES` | `5` | 最多保留幾個檔案，包含正在寫入的那一個，正整數 |
-| `LOG_MAX_TOTAL_MIB` | `1024` | `LOG_MAX_FILE_MIB` × `LOG_MAX_FILES` 的上限（MiB），正整數。超過時程式會拒絕啟動 |
 
 ## Quick Start
 
@@ -40,10 +27,10 @@ rust-log-generator 是用 Rust 寫的 log 產生器，會依照你設定的速�
 
 已在 Kubernetes v1.37 測試過。
 
-一行指令部署：
+一行指令部署 0.1.2 版：
 
 ```bash
-kubectl apply -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/overlay/prod?ref=main'
+kubectl apply -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/overlay/prod?ref=v0.1.2'
 ```
 
 這會建立 `rust-log-generator` 這個 namespace，以及裡面存放設定值的 ConfigMap、1 GiB 的 PersistentVolumeClaim（PVC，向叢集申請的一塊儲存空間）、Deployment（負責建立 Pod 並讓它持續執行），以及禁止所有網路連線的 NetworkPolicy。Pod（Kubernetes 執行 container 的最小單位）啟動後以 1 MiB/s 寫入 JSON log，檔案最多占 500 MiB。
@@ -52,14 +39,10 @@ kubectl apply -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/over
 
 ```bash
 kubectl -n rust-log-generator rollout status deployment/rust-log-generator
-kubectl -n rust-log-generator logs deployment/rust-log-generator --tail=5
-```
-
-程式啟動時會在 stdout（程式輸出一般訊息的管道）印出目前的設定，之後大約每秒回報一次實際的寫入速率。要看開頭的設定，改用：
-
-```bash
 kubectl -n rust-log-generator logs deployment/rust-log-generator | head -n 3
 ```
+
+程式啟動時會在 stdout（程式輸出一般訊息的管道）印出目前的設定，之後大約每秒回報一次實際的寫入速率：
 
 ```text
 rust-log-generator: run 604f8f26: writing 1 MiB/s of JSON logs to /logs/app.log (rotate at 100 MiB, keep 5 files)
@@ -67,38 +50,9 @@ rust-log-generator: 1.00 MiB/s (total 1.0 MiB)
 rust-log-generator: 1.00 MiB/s (total 2.1 MiB)
 ```
 
-產生的 log 寫在 PVC 裡的 `/logs/app.log`，不是 stdout。映像檔裡只有程式本身，沒有 shell 也沒有 `cat` 這類工具，所以不能用 `kubectl exec` 進去看檔案。要看檔案內容，可以用 `kubectl debug` 在 Pod 裡臨時加一個帶有工具的 container：
+產生的 log 寫在 PVC 裡的 `/logs/app.log`，不是 stdout。
 
-```bash
-POD=$(kubectl -n rust-log-generator get pod -l app.kubernetes.io/name=rust-log-generator -o name)
-kubectl -n rust-log-generator debug "$POD" -i --image=docker.io/library/busybox:1.37 \
-  --target=rust-log-generator --profile=restricted -- tail -n 2 /proc/1/root/logs/app.log
-```
-
-這會先印出幾行 `kubectl` 的提示，接著是 `app.log` 的最後兩行。`/proc/1/root` 是從臨時 container 看到的程式檔案系統。節點要能從 `docker.io` 下載 `busybox` 映像檔。每執行一次，Pod 裡就會留下一個已結束的臨時 container，Pod 重建後才會消失。
-
-要調整速率或格式，先把這個 repo 抓下來：
-
-```bash
-git clone https://gitlab.com/kubeantony/rust-log-generator.git
-cd rust-log-generator
-```
-
-修改 `k8s/base/kustomization.yaml` 裡的設定值，再部署：
-
-```bash
-kubectl apply -k k8s/overlay/prod
-```
-
-`LOG_MAX_FILE_MIB` × `LOG_MAX_FILES` 不能超過 900，原因見下方「Kubernetes 設定」一節。
-
-移除：
-
-```bash
-kubectl delete -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/overlay/prod?ref=main'
-```
-
-這會連同 namespace 和 PVC 一起刪除。大多數 StorageClass 會在 PVC 刪除時清掉資料，所以寫好的 log 檔也會消失。
+修改設定、查看 log 檔的內容和移除部署的步驟，都在 [docs/install.md](docs/install.md)。
 
 ### 用 podman 在本機執行
 
@@ -110,6 +64,21 @@ podman run --rm -e LOG_RATE_MIB=5 -e LOG_JSON=false -v rust-log-generator-logs:/
 ```
 
 停止後 log 檔還留在 volume 裡，不需要時用 `podman volume rm rust-log-generator-logs` 刪除。
+
+## Configuration
+
+所有設定都用環境變數，沒設定的就用預設值。設定值不合法時，程式會印出原因並結束（exit code 1）。訊息印在 stderr（程式輸出錯誤訊息的管道），在 Kubernetes 上用 `kubectl logs` 就看得到。
+
+| 環境變數 | 預設值 | 說明 |
+|---|---|---|
+| `LOG_RATE_MIB` | `1` | 每秒寫入幾 MiB，可以用小數。最小是每秒 1 byte（約 `0.00000096`），再小就寫不出完整的一行 |
+| `LOG_JSON` | `true` | `true` 輸出 JSON，`false` 輸出純文字，不分大小寫 |
+| `LOG_DIR` | `/logs` | log 檔所在的目錄，不存在時會自動建立 |
+| `LOG_MAX_FILE_MIB` | `100` | 單一檔案的大小上限（MiB），正整數 |
+| `LOG_MAX_FILES` | `5` | 最多保留幾個檔案，包含正在寫入的那一個，正整數 |
+| `LOG_MAX_TOTAL_MIB` | `1024` | `LOG_MAX_FILE_MIB` × `LOG_MAX_FILES` 的上限（MiB），正整數。超過時程式會拒絕啟動 |
+
+在 Kubernetes 上怎麼改這些設定，見 [docs/install.md](docs/install.md)。
 
 ## How It Works
 
@@ -174,24 +143,18 @@ flowchart LR
 另外有兩點要注意：
 
 - 映像檔用 digest（內容的雜湊值）指定，不是用 tag，所以部署的一定是同一份映像檔。
-- Deployment 把 `LOG_MAX_TOTAL_MIB` 設為 900，略小於 1 GiB 的 PVC。不是每種儲存空間都會強制執行 PVC 的容量限制，所以由程式自己把關。`LOG_MAX_FILE_MIB` × `LOG_MAX_FILES` 超過 900 時，Pod 會啟動失敗。要放寬的話，`k8s/base/pvc.yaml` 的容量和 `k8s/base/deployment.yaml` 裡的這個值要一起加大。
+- Deployment 把 `LOG_MAX_TOTAL_MIB` 設為 900，略小於 1 GiB 的 PVC。不是每種儲存空間都會強制執行 PVC 的容量限制，所以由程式自己把關。`LOG_MAX_FILE_MIB` × `LOG_MAX_FILES` 超過 900 時，Pod 會啟動失敗。要放寬的步驟見 [docs/install.md](docs/install.md)。
 
-### 測試
+測試分成哪幾層、各自怎麼執行，見 [tests/README.md](tests/README.md)。
 
-測試分成三層：
+## Known Limitations
 
-| 測試 | 內容 | 怎麼執行 |
-|---|---|---|
-| 單元測試（`src/` 各檔案內） | 設定、格式、速率計算、輪替 | 建置映像檔時自動執行，沒通過就建不出映像檔 |
-| 端到端測試（`tests/e2e.rs`） | 實際執行編譯出來的程式，檢查輸出、結束方式和錯誤處理 | 同上 |
-| 映像檔檢查（`tests/image/e2e.py`） | 用 podman 執行映像檔，量測速率準確度，並模擬磁碟寫滿、暫停、檔案被刪除、強制終止等狀況 | 發佈映像檔之前手動執行，約 7 分鐘 |
-
-映像檔檢查的執行方式：
-
-```bash
-podman build -t rust-log-generator:dev .
-python3 tests/image/e2e.py rust-log-generator:dev
-```
+- **同一個目錄只能有一個程式在寫。** 程式不會鎖定檔案。兩個程式寫同一個 `LOG_DIR` 時，行號會錯亂，檔案也會被對方輪替掉。Kubernetes 的設定用 `Recreate` 策略避開這種情況：舊的 Pod 結束之後，新的才會啟動。
+- **被強制終止或斷電時會掉資料。** 程式每 100 ms 把資料交給作業系統，但不會要求立刻寫進磁碟（沒有呼叫 fsync）。process 被強制終止時，例如收到 SIGKILL，還在程式緩衝區裡的資料會消失，最多 256 KiB，也就是 1,024 行；已經在檔案裡的仍然是完整的行。主機斷電或當機時，作業系統還沒寫進磁碟的部分也會遺失。
+- **既有的檔案不會被縮小。** 沿用舊的 volume 並調低 `LOG_MAX_FILE_MIB` 時，原本比新上限大的 `app.log` 會原封不動變成 `app.log.1`，直到被輪替掉為止。這段期間磁碟用量可能超過設定的上限。
+- **`ts` 取自系統時鐘。** 主機校時的時候，後面的行的時間可能比前面的早，或突然往前跳。速率控制用的是不受校時影響的時鐘，所以寫入速率不會跟著變。
+- **`LOG_DIR` 不要指到別人也能寫的目錄。** 程式開啟 `app.log` 時不會檢查它是不是符號連結（指向另一個檔案的捷徑）。能寫這個目錄的人可以把 `app.log` 換成連結，讓 log 寫進別的檔案。Kubernetes 的設定裡，volume 只有這個 Pod 在用，不會有這個問題。
+- **映像檔只提供 `linux/amd64`。**
 
 ## License
 
