@@ -1,6 +1,6 @@
 [package]
 name = "rust-log-generator"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Log generator with a configurable MiB/s rate and JSON or plain-text output"
 license = "Apache-2.0"

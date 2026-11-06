@@ -20,7 +20,7 @@ rust-log-generator 是用 Rust 寫的 log 產生器，會依照你設定的速�
 
 | 環境變數 | 預設值 | 說明 |
 |---|---|---|
-| `LOG_RATE_MIB` | `1` | 每秒寫入幾 MiB，必須大於 0，可以用小數 |
+| `LOG_RATE_MIB` | `1` | 每秒寫入幾 MiB，可以用小數。最小是每秒 1 byte（約 `0.00000096`），再小就寫不出完整的一行 |
 | `LOG_JSON` | `true` | `true` 輸出 JSON，`false` 輸出純文字，不分大小寫 |
 | `LOG_DIR` | `/logs` | log 檔所在的目錄，不存在時會自動建立 |
 | `LOG_MAX_FILE_MIB` | `100` | 單一檔案的大小上限（MiB），正整數 |
@@ -106,7 +106,7 @@ kubectl delete -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/ove
 
 ```bash
 podman run --rm -e LOG_RATE_MIB=5 -e LOG_JSON=false -v rust-log-generator-logs:/logs \
-  registry.gitlab.com/kubeantony/rust-log-generator:0.1.1
+  registry.gitlab.com/kubeantony/rust-log-generator:0.1.2
 ```
 
 停止後 log 檔還留在 volume 裡，不需要時用 `podman volume rm rust-log-generator-logs` 刪除。
@@ -151,6 +151,8 @@ flowchart LR
 
 **輪替檔案。** 下一行會讓 `app.log` 超過 `LOG_MAX_FILE_MIB` 時，`app.log` 改名為 `app.log.1`，原本的 `app.log.1` 變成 `app.log.2`，依此類推，最舊的那個檔案被刪除。連同 `app.log` 在內最多保留 `LOG_MAX_FILES` 個檔案，所以編號最大是 `LOG_MAX_FILES` − 1。以預設值來說，就是 `app.log` 到 `app.log.4` 這 5 個檔案、每個 100 MiB，最多占 500 MiB。
 
+執行中如果 `app.log` 被刪除，或被換成另一個檔案，程式會在下一輪（100 ms 內）發現，改寫到路徑上現有的 `app.log`；檔案或目錄不存在就重新建立。如果路徑上的東西打不開（例如沒有寫入權限），程式會繼續寫原本的檔案，等下一次輪替再換新檔。
+
 **結束。** 收到 SIGTERM 或 SIGINT 後，程式把還在記憶體裡的資料寫進檔案，然後正常結束（exit code 0）。
 
 ### Kubernetes 設定
@@ -173,6 +175,23 @@ flowchart LR
 
 - 映像檔用 digest（內容的雜湊值）指定，不是用 tag，所以部署的一定是同一份映像檔。
 - Deployment 把 `LOG_MAX_TOTAL_MIB` 設為 900，略小於 1 GiB 的 PVC。不是每種儲存空間都會強制執行 PVC 的容量限制，所以由程式自己把關。`LOG_MAX_FILE_MIB` × `LOG_MAX_FILES` 超過 900 時，Pod 會啟動失敗。要放寬的話，`k8s/base/pvc.yaml` 的容量和 `k8s/base/deployment.yaml` 裡的這個值要一起加大。
+
+### 測試
+
+測試分成三層：
+
+| 測試 | 內容 | 怎麼執行 |
+|---|---|---|
+| 單元測試（`src/` 各檔案內） | 設定、格式、速率計算、輪替 | 建置映像檔時自動執行，沒通過就建不出映像檔 |
+| 端到端測試（`tests/e2e.rs`） | 實際執行編譯出來的程式，檢查輸出、結束方式和錯誤處理 | 同上 |
+| 映像檔檢查（`tests/image/e2e.py`） | 用 podman 執行映像檔，量測速率準確度，並模擬磁碟寫滿、暫停、檔案被刪除、強制終止等狀況 | 發佈映像檔之前手動執行，約 7 分鐘 |
+
+映像檔檢查的執行方式：
+
+```bash
+podman build -t rust-log-generator:dev .
+python3 tests/image/e2e.py rust-log-generator:dev
+```
 
 ## License
 

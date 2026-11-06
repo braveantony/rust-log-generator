@@ -1,5 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
+use std::mem;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 pub const FILE_NAME: &str = "app.log";
@@ -43,7 +45,46 @@ impl RotatingWriter {
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
+        self.follow_replaced_file()?;
         self.file.flush()
+    }
+
+    /// If someone deleted `app.log` or put another file in its place, the open
+    /// file is no longer the one readers see, and lines would keep going to a
+    /// file without a name until the next rotation. This switches to the file
+    /// that is at the path now, creating it (and the directory) if it is gone,
+    /// and takes along the lines that are still buffered.
+    ///
+    /// It is best effort. When the path cannot be examined, or what is there
+    /// is not a file that can be opened for appending, the writer stays with
+    /// the file it has, which is what happened before this check existed; the
+    /// next rotation then moves the obstacle out of the way.
+    fn follow_replaced_file(&mut self) -> io::Result<()> {
+        let Ok(ours) = self.file.get_ref().metadata() else {
+            return Ok(());
+        };
+        match fs::metadata(self.dir.join(FILE_NAME)) {
+            Ok(at_path) if at_path.dev() == ours.dev() && at_path.ino() == ours.ino() => {
+                return Ok(())
+            }
+            // Only a regular file is followed: opening a FIFO, for one, could
+            // block for ever.
+            Ok(at_path) if !at_path.is_file() => return Ok(()),
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Ok(()),
+        }
+        let reopened = fs::create_dir_all(&self.dir).and_then(|()| open_active(&self.dir));
+        let Ok((file, size)) = reopened else {
+            return Ok(());
+        };
+        let (_, buffered) = mem::replace(&mut self.file, file).into_parts();
+        // The buffer is only unavailable after a panic inside a write, and a
+        // panic does not come back here.
+        let buffered = buffered.unwrap_or_default();
+        self.file.write_all(&buffered)?;
+        self.size = size + buffered.len() as u64;
+        Ok(())
     }
 
     fn rotate(&mut self) -> io::Result<()> {
@@ -228,6 +269,48 @@ mod tests {
     }
 
     #[test]
+    fn keeps_exactly_max_files_when_more_than_four_are_allowed() {
+        for max_files in [5, 6] {
+            let dir = TempDir::new();
+            let mut writer = RotatingWriter::new(&dir.0, 4, max_files).unwrap();
+            let lines: Vec<String> = (0..10).map(|number| format!("{number:03}\n")).collect();
+            for line in &lines {
+                writer.write_line(line.as_bytes()).unwrap();
+            }
+            writer.flush().unwrap();
+            // One line per file: the newest max_files lines remain, newest first.
+            assert_eq!(dir.file_names().len(), max_files, "max_files {max_files}");
+            assert_eq!(dir.read("app.log"), lines[9]);
+            for slot in 1..max_files {
+                assert_eq!(dir.read(&format!("app.log.{slot}")), lines[9 - slot]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_longer_than_the_max_still_goes_into_an_empty_file() {
+        let dir = TempDir::new();
+        let mut writer = RotatingWriter::new(&dir.0, 2, 5).unwrap();
+        write_all(&mut writer, &["aaa\n"]);
+        assert_eq!(dir.read("app.log"), "aaa\n");
+        assert_eq!(dir.file_names(), ["app.log"]);
+    }
+
+    #[test]
+    fn a_rotation_that_cannot_move_a_file_reports_the_error() {
+        // A directory where app.log.1 should go. With two files allowed
+        // nothing is shifted first, so the active file is renamed straight
+        // onto the directory: that fails, and not because something is missing.
+        let dir = TempDir::new();
+        fs::create_dir(dir.0.join("app.log.1")).unwrap();
+        fs::write(dir.0.join("app.log.1").join("in-the-way"), "x").unwrap();
+        let mut writer = RotatingWriter::new(&dir.0, 4, 2).unwrap();
+        writer.write_line(b"aaa\n").unwrap();
+        let err = writer.write_line(b"bbb\n").unwrap_err();
+        assert_ne!(err.kind(), io::ErrorKind::NotFound, "{err}");
+    }
+
+    #[test]
     fn with_a_single_file_rotation_starts_the_file_over() {
         let dir = TempDir::new();
         let mut writer = RotatingWriter::new(&dir.0, 4, 1).unwrap();
@@ -265,6 +348,90 @@ mod tests {
         fs::remove_file(dir.0.join("app.log")).unwrap();
         write_all(&mut writer, &["ccc\n"]);
         assert_eq!(dir.read("app.log"), "ccc\n");
+    }
+
+    #[test]
+    fn a_deleted_active_file_is_recreated_at_the_next_flush() {
+        let dir = TempDir::new();
+        let mut writer = RotatingWriter::new(&dir.0, 1024, 5).unwrap();
+        write_all(&mut writer, &["aaa\n"]);
+        fs::remove_file(dir.0.join("app.log")).unwrap();
+        write_all(&mut writer, &["bbb\n", "ccc\n"]);
+        assert_eq!(dir.read("app.log"), "bbb\nccc\n");
+    }
+
+    #[test]
+    fn follows_a_file_that_replaced_the_active_one() {
+        let dir = TempDir::new();
+        let mut writer = RotatingWriter::new(&dir.0, 1024, 5).unwrap();
+        write_all(&mut writer, &["aaa\n"]);
+        fs::rename(dir.0.join("app.log"), dir.0.join("moved.log")).unwrap();
+        fs::write(dir.0.join("app.log"), "external\n").unwrap();
+        write_all(&mut writer, &["bbb\n"]);
+        assert_eq!(dir.read("moved.log"), "aaa\n");
+        assert_eq!(dir.read("app.log"), "external\nbbb\n");
+    }
+
+    #[test]
+    fn counts_the_size_of_a_file_that_replaced_the_active_one() {
+        let dir = TempDir::new();
+        let mut writer = RotatingWriter::new(&dir.0, 16, 5).unwrap();
+        write_all(&mut writer, &["aaa\n"]);
+        fs::remove_file(dir.0.join("app.log")).unwrap();
+        fs::write(dir.0.join("app.log"), "ext\next\n").unwrap();
+        // 8 bytes already there plus this line: 12 of the 16 allowed.
+        write_all(&mut writer, &["bbb\n"]);
+        // Exactly full, so not rotated yet.
+        write_all(&mut writer, &["ccc\n"]);
+        assert_eq!(dir.read("app.log"), "ext\next\nbbb\nccc\n");
+        assert_eq!(dir.file_names(), ["app.log"]);
+        // One more line does not fit.
+        write_all(&mut writer, &["ddd\n"]);
+        assert_eq!(dir.read("app.log.1"), "ext\next\nbbb\nccc\n");
+        assert_eq!(dir.read("app.log"), "ddd\n");
+    }
+
+    #[test]
+    fn stays_with_its_file_when_what_replaced_it_cannot_be_written_to() {
+        // A directory stands in for anything that cannot be opened for
+        // appending, such as a file owned by someone else.
+        let dir = TempDir::new();
+        let mut writer = RotatingWriter::new(&dir.0, 1024, 5).unwrap();
+        write_all(&mut writer, &["aaa\n"]);
+        fs::remove_file(dir.0.join("app.log")).unwrap();
+        fs::create_dir(dir.0.join("app.log")).unwrap();
+        writer.write_line(b"bbb\n").unwrap();
+        writer.flush().unwrap();
+        assert!(dir.0.join("app.log").is_dir());
+    }
+
+    #[test]
+    fn stays_with_its_file_when_the_path_cannot_be_examined() {
+        // The log directory has turned into a file, so looking up app.log in
+        // it fails with something other than "not found".
+        let dir = TempDir::new();
+        let logs = dir.0.join("logs");
+        let mut writer = RotatingWriter::new(&logs, 1024, 5).unwrap();
+        writer.write_line(b"aaa\n").unwrap();
+        writer.flush().unwrap();
+        fs::remove_dir_all(&logs).unwrap();
+        fs::write(&logs, "now a file").unwrap();
+        writer.write_line(b"bbb\n").unwrap();
+        writer.flush().unwrap();
+        assert_eq!(fs::read_to_string(&logs).unwrap(), "now a file");
+    }
+
+    #[test]
+    fn recreates_the_directory_when_it_was_removed() {
+        let dir = TempDir::new();
+        let logs = dir.0.join("logs");
+        let mut writer = RotatingWriter::new(&logs, 1024, 5).unwrap();
+        writer.write_line(b"aaa\n").unwrap();
+        writer.flush().unwrap();
+        fs::remove_dir_all(&logs).unwrap();
+        writer.write_line(b"bbb\n").unwrap();
+        writer.flush().unwrap();
+        assert_eq!(fs::read_to_string(logs.join("app.log")).unwrap(), "bbb\n");
     }
 
     #[test]
