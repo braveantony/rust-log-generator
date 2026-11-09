@@ -30,6 +30,7 @@ IMAGE = None                                            # set from the command l
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = None                                             # temporary directory for this run
 USERNS = "--userns=keep-id:uid=65532,gid=65532"         # host user <-> 65532 in the container
+LABEL = "rust-log-generator-e2e"                        # marks what this script creates
 MIB = 1024 * 1024
 LINE = 256
 RESULTS = []
@@ -54,8 +55,8 @@ def fresh_dir(name):
 
 
 def start(name, env, directory, mount_opts="", extra=()):
-    sh("podman", "rm", "-f", name)
-    args = ["podman", "run", "-d", "--name", name, USERNS]
+    remove(name)
+    args = ["podman", "run", "-d", "--label", LABEL, "--name", name, USERNS]
     for key, value in env.items():
         args += ["-e", f"{key}={value}"]
     if directory:
@@ -88,8 +89,25 @@ def stop(name, signal="TERM"):
     return code, time.monotonic() - began
 
 
-def remove(name):
-    sh("podman", "rm", "-f", name)
+def ours(kind):
+    """Names of the containers or volumes that carry this script's label."""
+    command = ["podman", "ps", "-a", "--format", "{{.Names}}"] if kind == "container" else \
+              ["podman", "volume", "ls", "--format", "{{.Name}}"]
+    return set(sh(*command, "--filter", f"label={LABEL}").stdout.split())
+
+
+def remove(*names):
+    """Removes the named containers, but only those this script created: a
+    container of the user's that happens to have the same name is left alone,
+    and the podman run that needs the name then fails and says so."""
+    mine = [name for name in names if name in ours("container")]
+    if mine:
+        sh("podman", "rm", "-f", *mine)
+
+
+def remove_volume(name):
+    if name in ours("volume"):
+        sh("podman", "volume", "rm", "-f", name)
 
 
 def run_to_exit(name, env, directory, mount_opts="", timeout=20):
@@ -129,11 +147,11 @@ def check(directory, fmt, max_file_mib, max_files):
 
 
 def cleanup():
-    """Removes every container and volume this script may have left behind."""
-    names = [name for name in sh("podman", "ps", "-a", "--format", "{{.Names}}").stdout.split() if name.startswith("rlg-")]
-    if names:
-        sh("podman", "rm", "-f", *names)
-    sh("podman", "volume", "rm", "-f", "rlg-full")
+    """Removes every container and volume this script may have left behind,
+    found by its label, and nothing else."""
+    remove(*ours("container"))
+    for name in ours("volume"):
+        remove_volume(name)
 
 
 def listing(directory):
@@ -489,11 +507,11 @@ def group_faults():
            f"disk minus last reported total: {min(d for _, _, d, _ in worst):.2f}..{max(d for _, _, d, _ in worst):.2f} MiB; exit codes {sorted({c for *_, c in worst})}")
 
     # Disk full: a small tmpfs volume kept mounted by a helper container.
-    sh("podman", "rm", "-f", "rlg-full", "rlg-full-helper")
-    sh("podman", "volume", "rm", "-f", "rlg-full")
-    made = sh("podman", "volume", "create", "--opt", "type=tmpfs", "--opt", "device=tmpfs",
+    remove("rlg-full", "rlg-full-helper")
+    remove_volume("rlg-full")
+    made = sh("podman", "volume", "create", "--label", LABEL, "--opt", "type=tmpfs", "--opt", "device=tmpfs",
               "--opt", "o=size=8m,uid=65532,gid=65532,mode=0755", "rlg-full")
-    helper = sh("podman", "run", "-d", "--name", "rlg-full-helper", "-v", "rlg-full:/logs",
+    helper = sh("podman", "run", "-d", "--label", LABEL, "--name", "rlg-full-helper", "-v", "rlg-full:/logs",
                 "docker.io/library/busybox:1.37", "sleep", "600")
     if made.returncode != 0 or helper.returncode != 0:
         # Not being able to run the check is a failure, not something to pass over.
@@ -502,8 +520,8 @@ def group_faults():
     env = ["-e", "LOG_RATE_MIB=20", "-e", "LOG_MAX_FILE_MIB=3", "-e", "LOG_MAX_FILES=5"]
 
     def run_on_full_volume():
-        sh("podman", "rm", "-f", "rlg-full")
-        sh("podman", "run", "-d", "--name", "rlg-full", *env, "-v", "rlg-full:/logs", IMAGE)
+        remove("rlg-full")
+        sh("podman", "run", "-d", "--label", LABEL, "--name", "rlg-full", *env, "-v", "rlg-full:/logs", IMAGE)
         code = wait("rlg-full", timeout=15)
         out, err = logs("rlg-full")
         return code, out, err
@@ -528,8 +546,8 @@ def group_faults():
 
     # Free some space and start again on the same volume.
     sh("podman", "exec", "rlg-full-helper", "rm", "-f", "/logs/app.log.1", "/logs/app.log.2")
-    sh("podman", "rm", "-f", "rlg-full")
-    sh("podman", "run", "-d", "--name", "rlg-full", "-e", "LOG_RATE_MIB=1", "-e", "LOG_MAX_FILE_MIB=3", "-e", "LOG_MAX_FILES=2",
+    remove("rlg-full")
+    sh("podman", "run", "-d", "--label", LABEL, "--name", "rlg-full", "-e", "LOG_RATE_MIB=1", "-e", "LOG_MAX_FILE_MIB=3", "-e", "LOG_MAX_FILES=2",
        "-v", "rlg-full:/logs", IMAGE)
     time.sleep(2.0)
     sh("podman", "kill", "-s", "TERM", "rlg-full")
@@ -539,8 +557,8 @@ def group_faults():
     record("restart after a full disk", None,
            f"exit {code2}; files {summary['files']}; checker: {summary['problem_count']} problems"
            + (f", first: {summary['problems'][:2]}" if summary["problems"] else ""))
-    sh("podman", "rm", "-f", "rlg-full", "rlg-full-helper")
-    sh("podman", "volume", "rm", "-f", "rlg-full")
+    remove("rlg-full", "rlg-full-helper")
+    remove_volume("rlg-full")
 
 
 GROUPS = {"config": group_config, "rate": group_rate, "content": group_content, "rotate": group_rotate,
