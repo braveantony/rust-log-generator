@@ -379,6 +379,27 @@ fn rejects_a_rate_too_low_to_ever_write_a_line() {
 }
 
 #[test]
+fn a_newline_in_log_dir_does_not_start_a_line_of_its_own() {
+    let dir = TempDir::new();
+    let log_dir = dir.path("logs\nrust-log-generator: fake");
+    let finished = run_until_signal(&log_dir, &[], Duration::from_millis(300), "TERM");
+    assert_eq!(finished.code, Some(0), "stderr: {}", finished.stderr);
+    let first = finished.stdout.lines().next().unwrap();
+    assert!(first.contains("logs\\nrust-log-generator: fake/app.log"), "{first}");
+    assert!(!finished.stdout.lines().any(|line| line.starts_with("rust-log-generator: fake")));
+}
+
+#[test]
+fn a_newline_in_log_dir_stays_inside_the_error_message() {
+    let dir = TempDir::new();
+    fs::write(dir.path("a-file"), "").unwrap();
+    let finished = run_to_end(&dir.path("a-file").join("x\nfake"), &[]);
+    assert_eq!(finished.code, Some(1));
+    assert_eq!(finished.stderr.lines().count(), 1, "{:?}", finished.stderr);
+    assert!(finished.stderr.contains("a-file/x\\nfake"), "{}", finished.stderr);
+}
+
+#[test]
 fn reports_a_directory_it_cannot_create() {
     let dir = TempDir::new();
     fs::write(dir.path("a-file"), "").unwrap();
