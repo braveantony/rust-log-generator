@@ -4,6 +4,7 @@ mod pacer;
 mod rotate;
 mod run_id;
 
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -39,15 +40,15 @@ fn run() -> Result<(), String> {
     }
 
     let mut writer = RotatingWriter::new(&config.dir, config.max_file_bytes, config.max_files)
-        .map_err(|err| format!("cannot open log file in {}: {err}", config.dir.display()))?;
-    let write_failed = |err| format!("cannot write to {}: {err}", config.dir.display());
+        .map_err(|err| format!("cannot open log file in {}: {err}", shown(&config.dir)))?;
+    let write_failed = |err| format!("cannot write to {}: {err}", shown(&config.dir));
 
     let run_id = run_id::generate();
     println!(
         "rust-log-generator: run {run_id}: writing {} MiB/s of {} logs to {} (rotate at {} MiB, keep {} files)",
         config.rate_bytes_per_sec / MIB,
         if config.json { "JSON" } else { "text" },
-        config.dir.join(rotate::FILE_NAME).display(),
+        shown(&config.dir.join(rotate::FILE_NAME)),
         config.max_file_bytes as f64 / MIB,
         config.max_files,
     );
@@ -101,6 +102,15 @@ fn run() -> Result<(), String> {
     writer.flush().map_err(write_failed)?;
     println!("rust-log-generator: stopped after {:.1} MiB", written as f64 / MIB);
     Ok(())
+}
+
+/// A path as text for a message of one line. Control characters such as a
+/// newline or a terminal escape are escaped, as are quotes and backslashes,
+/// so a path cannot end the line and make what follows look like a line of
+/// its own. An ordinary path, spaces and non-ASCII letters included, comes
+/// out unchanged.
+fn shown(path: &Path) -> String {
+    path.display().to_string().escape_debug().to_string()
 }
 
 fn unix_millis() -> u64 {
