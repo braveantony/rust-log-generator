@@ -12,6 +12,11 @@ const BUFFER_BYTES: usize = 256 * 1024;
 /// past `max_file_bytes` the file is rotated to `app.log.1` (older files shift
 /// to `.2`, `.3`, ...) and at most `max_files` files are kept, the active one
 /// included.
+///
+/// Together the files stay within `max_file_bytes` x `max_files`, the space
+/// the configuration allows. Files left by an earlier configuration may be
+/// larger than one file is now; the oldest of them are deleted when they
+/// would push the total past that, at startup and at every rotation.
 pub struct RotatingWriter {
     dir: PathBuf,
     max_file_bytes: u64,
@@ -25,6 +30,10 @@ impl RotatingWriter {
         fs::create_dir_all(dir)?;
         remove_rotated_files_from(dir, max_files)?;
         let (file, size) = open_active(dir)?;
+        // app.log keeps its size until the first line rotates it, and only
+        // then starts growing towards max_file_bytes.
+        let total = max_file_bytes.saturating_mul(max_files as u64);
+        trim_rotated_files_to(dir, total.saturating_sub(size.max(max_file_bytes)))?;
         Ok(RotatingWriter {
             dir: dir.to_path_buf(),
             max_file_bytes,
@@ -107,6 +116,9 @@ impl RotatingWriter {
                 rename_if_exists(&self.numbered(index), &self.numbered(index + 1))?;
             }
             rename_if_exists(&active, &self.numbered(1))?;
+            // The new app.log can grow to max_file_bytes.
+            let rotated = self.max_file_bytes.saturating_mul(self.max_files as u64 - 1);
+            trim_rotated_files_to(&self.dir, rotated)?;
         }
         let (file, size) = open_active(&self.dir)?;
         self.file = file;
@@ -175,16 +187,53 @@ fn remove_rotated_files_from(dir: &Path, first_index: usize) -> io::Result<()> {
             continue;
         }
         let name = entry.file_name();
-        let index = name
-            .to_str()
-            .and_then(|name| name.strip_prefix(FILE_NAME))
-            .and_then(|rest| rest.strip_prefix('.'))
-            .and_then(|digits| digits.parse::<usize>().ok());
-        if index.is_some_and(|index| index >= first_index) {
+        if rotated_index(&name).is_some_and(|index| index >= first_index) {
             remove_if_exists(&dir.join(name))?;
         }
     }
     Ok(())
+}
+
+/// Deletes the oldest rotated files, `app.log.<n>` with the highest `n`
+/// first, until the ones that remain take at most `budget` bytes. Only
+/// regular files are counted and deleted. Files of the configured size
+/// always fit, so this only deletes files that an earlier configuration
+/// left larger. It reads the directory, so its cost depends on the files
+/// present, not on `max_files`.
+fn trim_rotated_files_to(dir: &Path, budget: u64) -> io::Result<()> {
+    let mut rotated = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let Some(index) = rotated_index(&entry.file_name()).filter(|&index| index >= 1) else {
+            continue;
+        };
+        // Does not follow a symlink. A file that vanished meanwhile takes no
+        // space any more.
+        match entry.metadata() {
+            Ok(metadata) if metadata.is_file() => rotated.push((index, metadata.len())),
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+    }
+    rotated.sort_unstable();
+    let mut total = rotated.iter().fold(0u64, |total, &(_, len)| total.saturating_add(len));
+    while total > budget {
+        let Some((index, len)) = rotated.pop() else {
+            break;
+        };
+        remove_if_exists(&dir.join(format!("{FILE_NAME}.{index}")))?;
+        total -= len;
+    }
+    Ok(())
+}
+
+/// The `n` of a file named `app.log.<n>`.
+fn rotated_index(name: &std::ffi::OsStr) -> Option<usize> {
+    name.to_str()
+        .and_then(|name| name.strip_prefix(FILE_NAME))
+        .and_then(|rest| rest.strip_prefix('.'))
+        .and_then(|digits| digits.parse::<usize>().ok())
 }
 
 fn rename_if_exists(from: &Path, to: &Path) -> io::Result<()> {
@@ -507,6 +556,72 @@ mod tests {
         let _writer = RotatingWriter::new(&dir.0, 1024, 2).unwrap();
         assert_eq!(dir.file_names(), ["app.log", "app.log.9"]);
         assert_eq!(dir.read("app.log.9/inside"), "keep\n");
+    }
+
+    /// Bytes in all regular files of the directory.
+    fn total_bytes(dir: &TempDir) -> u64 {
+        fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().metadata().unwrap())
+            .filter(|metadata| metadata.is_file())
+            .map(|metadata| metadata.len())
+            .sum()
+    }
+
+    #[test]
+    fn startup_drops_the_oldest_files_when_earlier_ones_were_larger() {
+        // 10 bytes x 5 files allows 50. Four 20-byte files from an earlier
+        // configuration plus room for a full app.log would be 90.
+        let dir = TempDir::new();
+        fs::write(dir.0.join("app.log"), "new\n").unwrap();
+        for name in ["app.log.1", "app.log.2", "app.log.3", "app.log.4"] {
+            fs::write(dir.0.join(name), "0123456789abcdefghi\n").unwrap();
+        }
+        let _writer = RotatingWriter::new(&dir.0, 10, 5).unwrap();
+        // app.log will grow to 10, which leaves 40 for the newest two.
+        assert_eq!(dir.file_names(), ["app.log", "app.log.1", "app.log.2"]);
+    }
+
+    #[test]
+    fn startup_counts_an_app_log_larger_than_one_file() {
+        // An app.log of 30 bytes stays until the first line rotates it, so
+        // only 20 of the 50 bytes are left for the others.
+        let dir = TempDir::new();
+        fs::write(dir.0.join("app.log"), "x".repeat(30)).unwrap();
+        fs::write(dir.0.join("app.log.1"), "x".repeat(20)).unwrap();
+        fs::write(dir.0.join("app.log.2"), "x".repeat(10)).unwrap();
+        let _writer = RotatingWriter::new(&dir.0, 10, 5).unwrap();
+        assert_eq!(dir.file_names(), ["app.log", "app.log.1"]);
+    }
+
+    #[test]
+    fn files_left_larger_by_an_earlier_config_never_push_the_total_past_the_cap() {
+        // The earlier configuration wrote 30-byte files; now 8 bytes x 5
+        // files allows 40 in all, and that must hold after every flush.
+        let dir = TempDir::new();
+        for name in ["app.log", "app.log.1", "app.log.2", "app.log.3"] {
+            fs::write(dir.0.join(name), "x".repeat(30)).unwrap();
+        }
+        let mut writer = RotatingWriter::new(&dir.0, 8, 5).unwrap();
+        assert!(total_bytes(&dir) <= 40, "{} bytes after startup", total_bytes(&dir));
+        for number in 0..40 {
+            write_all(&mut writer, &[&format!("{number:03}\n")]);
+            assert!(total_bytes(&dir) <= 40, "{} bytes after line {number}", total_bytes(&dir));
+        }
+        // By now only files of the new size remain: five of them, full.
+        assert_eq!(dir.file_names().len(), 5);
+        assert_eq!(total_bytes(&dir), 40);
+    }
+
+    #[test]
+    fn files_of_the_configured_size_are_never_dropped_early() {
+        let dir = TempDir::new();
+        let mut writer = RotatingWriter::new(&dir.0, 8, 4).unwrap();
+        for number in 0..20 {
+            write_all(&mut writer, &[&format!("{number:03}\n")]);
+        }
+        assert_eq!(dir.file_names(), ["app.log", "app.log.1", "app.log.2", "app.log.3"]);
+        assert_eq!(dir.read("app.log.3"), "012\n013\n");
     }
 
     #[test]
