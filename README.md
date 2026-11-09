@@ -67,7 +67,7 @@ podman run --rm -e LOG_RATE_MIB=5 -e LOG_JSON=false -v rust-log-generator-logs:/
 
 ## Configuration
 
-所有設定都用環境變數，沒設定的就用預設值。設定值不合法時，程式會印出原因並結束（exit code 1）。訊息印在 stderr（程式輸出錯誤訊息的管道），在 Kubernetes 上用 `kubectl logs` 就看得到。
+所有設定都用環境變數，沒設定的就用預設值。設定值不合法時（包括不是有效 UTF-8 文字的值），程式會印出原因並結束（exit code 1）。訊息印在 stderr（程式輸出錯誤訊息的管道），在 Kubernetes 上用 `kubectl logs` 就看得到。
 
 | 環境變數 | 預設值 | 說明 |
 |---|---|---|

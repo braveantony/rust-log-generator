@@ -12,11 +12,15 @@ pub struct Config {
 impl Config {
     /// Builds the configuration from a variable lookup (normally the process
     /// environment). Unset variables fall back to defaults; invalid values are
-    /// rejected with a message naming the offending variable.
-    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
+    /// rejected with a message naming the offending variable. The lookup
+    /// returns an error for a variable that is set but cannot be read, so
+    /// that it is not taken for unset.
+    pub fn from_lookup(
+        lookup: impl Fn(&str) -> Result<Option<String>, String>,
+    ) -> Result<Config, String> {
         // Validated after converting to bytes: a huge but finite MiB value can
         // still overflow to infinity in the conversion.
-        let rate_bytes_per_sec = match lookup("LOG_RATE_MIB") {
+        let rate_bytes_per_sec = match lookup("LOG_RATE_MIB")? {
             None => MIB as f64,
             Some(raw) => match raw.trim().parse::<f64>().map(|mib| mib * MIB as f64) {
                 Ok(bytes) if bytes.is_finite() && bytes >= MIN_RATE_BYTES_PER_SEC => bytes,
@@ -34,7 +38,7 @@ impl Config {
             },
         };
 
-        let json = match lookup("LOG_JSON") {
+        let json = match lookup("LOG_JSON")? {
             None => true,
             Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
                 "true" => true,
@@ -43,7 +47,7 @@ impl Config {
             },
         };
 
-        let dir = match lookup("LOG_DIR") {
+        let dir = match lookup("LOG_DIR")? {
             None => PathBuf::from("/logs"),
             Some(raw) if raw.is_empty() => return Err("LOG_DIR must not be empty".to_string()),
             Some(raw) => PathBuf::from(raw),
@@ -94,11 +98,11 @@ pub const MIB: u64 = 1024 * 1024;
 pub const MIN_RATE_BYTES_PER_SEC: f64 = 1.0;
 
 fn positive_integer(
-    lookup: &impl Fn(&str) -> Option<String>,
+    lookup: &impl Fn(&str) -> Result<Option<String>, String>,
     name: &str,
     default: u64,
 ) -> Result<u64, String> {
-    match lookup(name) {
+    match lookup(name)? {
         None => Ok(default),
         Some(raw) => match raw.trim().parse::<u64>() {
             Ok(value) if value > 0 => Ok(value),
@@ -117,7 +121,7 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        Config::from_lookup(|key| map.get(key).cloned())
+        Config::from_lookup(|key| Ok(map.get(key).cloned()))
     }
 
     #[test]

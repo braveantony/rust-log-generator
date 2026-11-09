@@ -31,7 +31,13 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
-    let config = Config::from_lookup(|name| std::env::var(name).ok())?;
+    let config = Config::from_lookup(|name| match std::env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        // Taking it for unset would quietly use the default, which for
+        // LOG_MAX_TOTAL_MIB may be a higher cap than the one meant.
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} is not valid UTF-8")),
+    })?;
 
     let stop = Arc::new(AtomicBool::new(false));
     for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
