@@ -95,7 +95,12 @@ struct Running {
 /// signal handlers, so from then on a signal stops it cleanly instead of
 /// killing it, however slow the machine is.
 fn start(log_dir: &Path, settings: &[(&str, &str)]) -> Running {
-    let mut child = program(log_dir, settings).spawn().unwrap();
+    start_command(program(log_dir, settings))
+}
+
+/// Like start(), for a command that program() made and the test changed.
+fn start_command(mut command: Command) -> Running {
+    let mut child = command.spawn().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let mut first_line = String::new();
     stdout.read_line(&mut first_line).unwrap();
@@ -367,6 +372,26 @@ fn rejects_an_invalid_setting_and_touches_no_file() {
     assert!(finished.stderr.contains("LOG_RATE_MIB"), "{}", finished.stderr);
     assert_eq!(dir.file_names(), ["app.log", "app.log.9"]);
     assert_eq!(fs::read_to_string(dir.path("app.log")).unwrap(), "keep\n");
+}
+
+#[test]
+fn rejects_a_setting_that_is_not_utf8_instead_of_using_the_default() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let dir = TempDir::new();
+    for name in ["LOG_MAX_TOTAL_MIB", "LOG_DIR"] {
+        let mut command = program(&dir.0, &[]);
+        command.env(name, OsStr::from_bytes(b"900\xff"));
+        let finished = finish(start_command(command));
+        assert_eq!(finished.code, Some(1), "{name}: {}", finished.stderr);
+        assert_eq!(finished.stdout, "", "{name}");
+        assert!(
+            finished.stderr.contains(&format!("{name} is not valid UTF-8")),
+            "{name}: {}",
+            finished.stderr
+        );
+    }
+    assert!(dir.file_names().is_empty());
 }
 
 #[test]

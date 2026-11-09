@@ -28,7 +28,7 @@ podman run --rm -v "$PWD":/src -w /src docker.io/library/rust:1.99.1-alpine3.24 
 
 ```text
 test result: ok. 72 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
-test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s
 ```
 
 第二個指令會在 repo 裡留下一個 `target` 目錄，放的是編譯的中間產物。它已經列在 `.gitignore` 裡，可以直接刪除。
