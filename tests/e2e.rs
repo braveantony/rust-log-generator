@@ -143,13 +143,19 @@ fn finish(mut running: Running) -> Finished {
     }
 }
 
+/// Sends the signal straight to the child, not through a `kill` program that
+/// would be looked up on PATH.
 fn send_signal(child: &Child, signal: &str) {
-    let status = Command::new("kill")
-        .arg(format!("-{signal}"))
-        .arg(child.id().to_string())
-        .status()
-        .unwrap();
-    assert!(status.success(), "kill -{signal} failed");
+    let number = match signal {
+        "TERM" => libc::SIGTERM,
+        "INT" => libc::SIGINT,
+        _ => panic!("send_signal does not know SIG{signal}"),
+    };
+    let pid = libc::pid_t::try_from(child.id()).unwrap();
+    // SAFETY: kill takes plain integers and touches no memory of ours. The
+    // child has not been waited for yet, so its pid still belongs to it.
+    let result = unsafe { libc::kill(pid, number) };
+    assert_eq!(result, 0, "kill -{signal}: {}", std::io::Error::last_os_error());
 }
 
 /// Lets the program run for `run_for` after it is ready, then signals it.
