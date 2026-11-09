@@ -27,7 +27,7 @@ podman run --rm -v "$PWD":/src -w /src docker.io/library/rust:1.99.1-alpine3.24 
 兩種測試都通過時，輸出的結尾像這樣：
 
 ```text
-test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s
 ```
 
