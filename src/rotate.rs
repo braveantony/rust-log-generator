@@ -1,7 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::mem;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 pub const FILE_NAME: &str = "app.log";
@@ -63,12 +63,12 @@ impl RotatingWriter {
         let Ok(ours) = self.file.get_ref().metadata() else {
             return Ok(());
         };
-        match fs::metadata(self.dir.join(FILE_NAME)) {
+        match fs::symlink_metadata(self.dir.join(FILE_NAME)) {
             Ok(at_path) if at_path.dev() == ours.dev() && at_path.ino() == ours.ino() => {
                 return Ok(())
             }
-            // Only a regular file is followed: opening a FIFO, for one, could
-            // block for ever.
+            // Only a regular file is followed, never a symlink, a FIFO or the
+            // like. open_active checks this again on what it opens.
             Ok(at_path) if !at_path.is_file() => return Ok(()),
             Ok(_) => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -119,13 +119,48 @@ impl RotatingWriter {
     }
 }
 
+/// Opens `<dir>/app.log` for appending, creating it if it is missing, and
+/// accepts only a regular file. A symlink is not followed, so the lines
+/// cannot be sent into some other file. The open does not wait, so a FIFO
+/// with no reader is refused at once instead of blocking for ever; on a
+/// regular file the flag has no effect. The type is checked on the opened
+/// file itself, so nothing can be swapped in between the check and the use.
 fn open_active(dir: &Path) -> io::Result<(BufWriter<File>, u64)> {
+    let path = dir.join(FILE_NAME);
     let file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join(FILE_NAME))?;
-    let size = file.metadata()?.len();
-    Ok((BufWriter::with_capacity(BUFFER_BYTES, file), size))
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+        .map_err(|err| match fs::symlink_metadata(&path) {
+            Ok(found) if !found.is_file() => not_a_regular_file(&found.file_type()),
+            _ => err,
+        })?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(not_a_regular_file(&metadata.file_type()));
+    }
+    Ok((BufWriter::with_capacity(BUFFER_BYTES, file), metadata.len()))
+}
+
+fn not_a_regular_file(file_type: &fs::FileType) -> io::Error {
+    let kind = if file_type.is_symlink() {
+        "a symbolic link"
+    } else if file_type.is_dir() {
+        "a directory"
+    } else if file_type.is_fifo() {
+        "a FIFO"
+    } else if file_type.is_socket() {
+        "a socket"
+    } else if file_type.is_char_device() || file_type.is_block_device() {
+        "a device"
+    } else {
+        "something else"
+    };
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{FILE_NAME} is {kind}, not a regular file"),
+    )
 }
 
 /// Deletes `app.log.<n>` for every `n >= first_index`. These are left behind
@@ -465,6 +500,54 @@ mod tests {
         assert_eq!(dir.read("app.log"), "ccc\n");
         assert_eq!(dir.read("app.log.1"), "bbb\n");
         assert_eq!(dir.read("app.log.2"), "aaa\n");
+    }
+
+    #[test]
+    fn startup_refuses_an_active_file_that_is_a_symlink() {
+        let dir = TempDir::new();
+        fs::write(dir.0.join("target"), "keep\n").unwrap();
+        std::os::unix::fs::symlink(dir.0.join("target"), dir.0.join("app.log")).unwrap();
+        let err = RotatingWriter::new(&dir.0, 1024, 5).err().unwrap();
+        assert!(err.to_string().contains("not a regular file"), "{err}");
+        assert_eq!(dir.read("target"), "keep\n");
+    }
+
+    #[test]
+    fn startup_refuses_an_active_file_that_is_a_fifo_without_blocking() {
+        let dir = TempDir::new();
+        let fifo = dir.0.join("app.log");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !made.is_ok_and(|status| status.success()) {
+            eprintln!("skipped: mkfifo is not available");
+            return;
+        }
+        // Opening a FIFO that nobody reads blocks for ever unless the open is
+        // non-blocking, so a regression would hang this test. Run it on a
+        // thread and give up waiting after a while instead.
+        let (sent, received) = std::sync::mpsc::channel();
+        let path = dir.0.clone();
+        std::thread::spawn(move || {
+            let failed = RotatingWriter::new(&path, 1024, 5).err();
+            let _ = sent.send(failed.map(|err| err.to_string()));
+        });
+        let outcome = received.recv_timeout(std::time::Duration::from_secs(5));
+        let message = outcome
+            .expect("opening a FIFO as app.log blocked")
+            .expect("a FIFO was accepted");
+        assert!(message.contains("not a regular file"), "{message}");
+    }
+
+    #[test]
+    fn does_not_follow_a_symlink_that_replaced_the_active_file() {
+        let dir = TempDir::new();
+        fs::write(dir.0.join("target"), "keep\n").unwrap();
+        let mut writer = RotatingWriter::new(&dir.0, 1024, 5).unwrap();
+        write_all(&mut writer, &["aaa\n"]);
+        fs::rename(dir.0.join("app.log"), dir.0.join("moved.log")).unwrap();
+        std::os::unix::fs::symlink(dir.0.join("target"), dir.0.join("app.log")).unwrap();
+        write_all(&mut writer, &["bbb\n"]);
+        assert_eq!(dir.read("target"), "keep\n");
+        assert_eq!(dir.read("moved.log"), "aaa\nbbb\n");
     }
 
     #[test]

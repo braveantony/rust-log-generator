@@ -6,6 +6,7 @@ description = "Log generator with a configurable MiB/s rate and JSON or plain-te
 license = "Apache-2.0"
 
 [dependencies]
+libc = "0.2"
 signal-hook = "0.3"
 
 [dev-dependencies]
