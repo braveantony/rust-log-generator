@@ -165,10 +165,16 @@ fn not_a_regular_file(file_type: &fs::FileType) -> io::Error {
 
 /// Deletes `app.log.<n>` for every `n >= first_index`. These are left behind
 /// when a volume is reused with a lower `max_files` than before; rotation
-/// alone never touches them.
+/// alone never touches them. A directory with such a name was not made by
+/// this program and cannot be removed like a file, so it is left alone
+/// instead of stopping the start. A symlink is removed, not what it points to.
 fn remove_rotated_files_from(dir: &Path, first_index: usize) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
-        let name = entry?.file_name();
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
         let index = name
             .to_str()
             .and_then(|name| name.strip_prefix(FILE_NAME))
@@ -490,6 +496,17 @@ mod tests {
             dir.file_names(),
             ["app.log", "app.log.9.gz", "app.log.bak", "notes.txt", "other.log.9"]
         );
+    }
+
+    #[test]
+    fn startup_leaves_a_directory_with_a_rotated_name_alone() {
+        let dir = TempDir::new();
+        fs::write(dir.0.join("app.log.3"), "old\n").unwrap();
+        fs::create_dir(dir.0.join("app.log.9")).unwrap();
+        fs::write(dir.0.join("app.log.9").join("inside"), "keep\n").unwrap();
+        let _writer = RotatingWriter::new(&dir.0, 1024, 2).unwrap();
+        assert_eq!(dir.file_names(), ["app.log", "app.log.9"]);
+        assert_eq!(dir.read("app.log.9/inside"), "keep\n");
     }
 
     #[test]
