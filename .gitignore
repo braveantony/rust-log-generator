@@ -1,1 +1,6 @@
 /target
+
+# Secrets that must never be committed
+.env
+*.pem
+*.key
