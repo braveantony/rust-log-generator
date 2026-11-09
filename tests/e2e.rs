@@ -389,17 +389,48 @@ fn reports_a_directory_it_cannot_create() {
 }
 
 #[test]
-fn reports_a_write_that_fails() {
-    // /dev/full accepts being opened and refuses every write, like a full disk.
-    if !Path::new("/dev/full").exists() {
-        eprintln!("skipped: this system has no /dev/full");
+fn refuses_an_app_log_that_is_a_symlink_and_leaves_its_target_alone() {
+    let dir = TempDir::new();
+    fs::write(dir.path("target"), "keep\n").unwrap();
+    std::os::unix::fs::symlink(dir.path("target"), dir.path("app.log")).unwrap();
+    let finished = run_to_end(&dir.0, &[]);
+    assert_eq!(finished.code, Some(1));
+    assert_eq!(finished.stdout, "");
+    assert!(
+        finished.stderr.contains("app.log is a symbolic link, not a regular file"),
+        "{}",
+        finished.stderr
+    );
+    assert_eq!(fs::read_to_string(dir.path("target")).unwrap(), "keep\n");
+}
+
+#[test]
+fn refuses_an_app_log_that_is_a_fifo_instead_of_hanging() {
+    let dir = TempDir::new();
+    let made = Command::new("mkfifo").arg(dir.path("app.log")).status();
+    if !made.is_ok_and(|status| status.success()) {
+        eprintln!("skipped: mkfifo is not available");
         return;
     }
-    let dir = TempDir::new();
-    std::os::unix::fs::symlink("/dev/full", dir.path("app.log")).unwrap();
-    let finished = run_to_end(&dir.0, &[("LOG_RATE_MIB", "100")]);
-    assert_eq!(finished.code, Some(1));
-    assert!(finished.stderr.contains("cannot write to"), "{}", finished.stderr);
+    // A program stuck opening the FIFO never prints a line, so this does not
+    // go through start(), which would wait for one for ever.
+    let mut child = program(&dir.0, &[]).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("the program was still opening the FIFO after 20 seconds");
+        }
+        sleep(Duration::from_millis(10));
+    };
+    let mut stderr = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    assert_eq!(status.code(), Some(1));
+    assert!(stderr.contains("app.log is a FIFO, not a regular file"), "{stderr}");
 }
 
 #[test]

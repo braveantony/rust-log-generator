@@ -52,6 +52,7 @@ dependencies = [
 name = "rust-log-generator"
 version = "0.1.2"
 dependencies = [
+ "libc",
  "serde_json",
  "signal-hook",
 ]

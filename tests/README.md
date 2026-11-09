@@ -27,13 +27,13 @@ podman run --rm -v "$PWD":/src -w /src docker.io/library/rust:1.99.1-alpine3.24 
 兩種測試都通過時，輸出的結尾像這樣：
 
 ```text
-test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
-test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s
 ```
 
 第二個指令會在 repo 裡留下一個 `target` 目錄，放的是編譯的中間產物。它已經列在 `.gitignore` 裡，可以直接刪除。
 
-端到端測試會實際啟動程式、寫入暫存目錄，再送出訊號讓它結束。每個測試都會等程式印出第一行才開始計時，所以不受機器速度影響。其中一個測試需要 `/dev/full` 這個裝置來模擬寫入失敗，系統上沒有的話會自動略過。
+端到端測試會實際啟動程式、寫入暫存目錄，再送出訊號讓它結束。每個測試都會等程式印出第一行才開始計時，所以不受機器速度影響。其中一個測試需要 `mkfifo` 指令來建立 FIFO，系統上沒有的話會自動略過。寫入失敗（磁碟寫滿）由下面的映像檔檢查負責。
 
 ## 映像檔檢查
 
