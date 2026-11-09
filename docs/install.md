@@ -15,14 +15,14 @@
 
 ## 步驟 1：取得設定檔
 
-把 0.1.2 版的 repo 抓下來：
+把 0.1.3 版的 repo 抓下來：
 
 ```bash
-git clone --branch v0.1.2 https://gitlab.com/kubeantony/rust-log-generator.git
+git clone --branch v0.1.3 https://gitlab.com/kubeantony/rust-log-generator.git
 cd rust-log-generator
 ```
 
-`--branch v0.1.2` 指定固定的版本。`git` 會印出一段關於 detached HEAD 的提示，這是正常的。
+`--branch v0.1.3` 指定固定的版本。`git` 會印出一段關於 detached HEAD 的提示，這是正常的。
 
 之後的指令都在 `rust-log-generator` 這個目錄裡執行。會用到的設定檔有這些：
 
@@ -238,5 +238,5 @@ kubectl delete -k k8s/overlay/prod
 沒有把 repo 抓下來的話，也可以直接用網址移除：
 
 ```bash
-kubectl delete -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/overlay/prod?ref=v0.1.2'
+kubectl delete -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/overlay/prod?ref=v0.1.3'
 ```

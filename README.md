@@ -27,10 +27,10 @@ rust-log-generator 是用 Rust 寫的 log 產生器，會依照你設定的速�
 
 已在 Kubernetes v1.37 測試過。
 
-一行指令部署 0.1.2 版：
+一行指令部署 0.1.3 版：
 
 ```bash
-kubectl apply -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/overlay/prod?ref=v0.1.2'
+kubectl apply -k 'https://gitlab.com/kubeantony/rust-log-generator.git//k8s/overlay/prod?ref=v0.1.3'
 ```
 
 這會建立 `rust-log-generator` 這個 namespace，以及裡面存放設定值的 ConfigMap、1 GiB 的 PersistentVolumeClaim（PVC，向叢集申請的一塊儲存空間）、Deployment（負責建立 Pod 並讓它持續執行），以及禁止所有網路連線的 NetworkPolicy。Pod（Kubernetes 執行 container 的最小單位）啟動後以 1 MiB/s 寫入 JSON log，檔案最多占 500 MiB。
@@ -60,7 +60,7 @@ rust-log-generator: 1.00 MiB/s (total 2.1 MiB)
 
 ```bash
 podman run --rm -e LOG_RATE_MIB=5 -e LOG_JSON=false -v rust-log-generator-logs:/logs \
-  registry.gitlab.com/kubeantony/rust-log-generator:0.1.2
+  registry.gitlab.com/kubeantony/rust-log-generator:0.1.3
 ```
 
 停止後 log 檔還留在 volume 裡，不需要時用 `podman volume rm rust-log-generator-logs` 刪除。
